@@ -117,7 +117,14 @@ public final class SettingsTab {
         settings.launcher(launcher.getText());
         settings.script(script.getText());
         settings.configs(files);
+        String problem = preflight(settings.launcher(), settings.script(), settings.configs());
+        if (problem != null) {
+            append("ERROR " + problem);
+            setStatus(false, "not started: " + problem);
+            return;
+        }
         try {
+            append("starting: " + String.join(" ", ServerClient.command(settings.launcher(), settings.script())));
             server.start(ServerClient.command(settings.launcher(), settings.script()));
             JsonObject health = server.call("health", null);
             append("server " + health.get("version").getAsString() + " started");
@@ -146,6 +153,20 @@ public final class SettingsTab {
             append("ERROR " + e.getMessage());
             setStatus(false, "not running: " + e.getMessage());
         }
+    }
+
+    /** Returns a human-readable problem, or null if the launch looks sane. */
+    static String preflight(String launcher, String script, List<String> configs) {
+        String exe = java.nio.file.Path.of(launcher).getFileName().toString().toLowerCase();
+        boolean isNode = exe.equals("node") || exe.equals("node.exe");
+        if (isNode && script.isEmpty()) return "Server script is empty — set it to <repo>\\server\\src\\main.mjs";
+        if (!script.isEmpty() && !java.nio.file.Files.isRegularFile(java.nio.file.Path.of(script))) {
+            return "Server script not found: " + script;
+        }
+        for (String c : configs) {
+            if (!java.nio.file.Files.isRegularFile(java.nio.file.Path.of(c))) return "Config not found: " + c;
+        }
+        return null;
     }
 
     public void append(String line) {

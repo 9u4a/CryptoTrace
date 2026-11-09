@@ -20,28 +20,37 @@ public final class Settings {
 
     /** Executable: "node" (or full path to node.exe), or the packaged crypto-server.exe. */
     public String launcher() {
-        String v = prefs.getString(LAUNCHER);
-        return v == null || v.isBlank() ? "node" : v;
+        String v = unquote(prefs.getString(LAUNCHER));
+        return v.isEmpty() ? "node" : v;
     }
 
     public void launcher(String v) {
-        prefs.setString(LAUNCHER, v.trim());
+        prefs.setString(LAUNCHER, unquote(v));
     }
 
     /** Path to server/src/main.mjs when launching through node; empty for the packaged exe. */
     public String script() {
-        String v = prefs.getString(SCRIPT);
-        return v == null ? "" : v;
+        return unquote(prefs.getString(SCRIPT));
     }
 
     public void script(String v) {
-        prefs.setString(SCRIPT, v.trim());
+        prefs.setString(SCRIPT, unquote(v));
     }
 
     public List<String> configs() {
         String v = prefs.getString(CONFIGS);
         if (v == null || v.isBlank()) return List.of();
-        return Arrays.stream(v.split("\n")).map(String::trim).filter(s -> !s.isEmpty()).toList();
+        return Arrays.stream(v.split("\n")).map(Settings::unquote).filter(s -> !s.isEmpty()).toList();
+    }
+
+    /** Trim and drop surrounding quotes (Windows "Copy as path" adds them). */
+    static String unquote(String v) {
+        if (v == null) return "";
+        String s = v.trim();
+        if (s.length() >= 2 && (s.startsWith("\"") && s.endsWith("\"") || s.startsWith("'") && s.endsWith("'"))) {
+            s = s.substring(1, s.length() - 1).trim();
+        }
+        return s;
     }
 
     public void configs(List<String> files) {

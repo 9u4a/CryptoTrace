@@ -41,6 +41,7 @@ public final class ServerClient implements AutoCloseable {
     /** Start `<command...> ` (e.g. ["node", "/path/server/src/main.mjs"] or ["crypto-server.exe"]). */
     public synchronized void start(List<String> command) throws IOException {
         close();
+        stderrTail.clear();
         ProcessBuilder pb = new ProcessBuilder(command);
         process = pb.start();
         stdin = process.getOutputStream();
@@ -56,6 +57,9 @@ public final class ServerClient implements AutoCloseable {
     public synchronized boolean isRunning() {
         return process != null && process.isAlive();
     }
+
+    /** Last stderr lines, attached to errors when the process dies. */
+    private final java.util.Deque<String> stderrTail = new java.util.concurrent.ConcurrentLinkedDeque<>();
 
     private void readLoop(Process p) {
         try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
@@ -74,7 +78,7 @@ public final class ServerClient implements AutoCloseable {
         } catch (IOException ignored) {
             // process ended
         }
-        IOException gone = new IOException("crypto server exited");
+        IOException gone = new IOException(exitReason(p));
         pending.values().forEach(f -> f.completeExceptionally(gone));
         pending.clear();
     }
@@ -82,10 +86,37 @@ public final class ServerClient implements AutoCloseable {
     private void errLoop(Process p) {
         try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getErrorStream(), StandardCharsets.UTF_8))) {
             String line;
-            while ((line = r.readLine()) != null) log.accept(line);
+            while ((line = r.readLine()) != null) {
+                stderrTail.addLast(line);
+                while (stderrTail.size() > 40) stderrTail.pollFirst();
+                log.accept(line);
+            }
         } catch (IOException ignored) {
             // process ended
         }
+    }
+
+    /** "crypto server exited (code 1): <last stderr lines>" — waits briefly so stderr is drained. */
+    private String exitReason(Process p) {
+        try {
+            p.waitFor(1, TimeUnit.SECONDS);
+            Thread.sleep(150);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        String code = p.isAlive() ? "?" : String.valueOf(p.exitValue());
+        return "crypto server exited (code " + code + ")" + summarize(List.copyOf(stderrTail));
+    }
+
+    /** Prefer the first "...Error: ..." line (Node puts the cause there, then a stack); else the last lines. */
+    static String summarize(List<String> lines) {
+        for (String l : lines) {
+            String s = l.strip();
+            if (s.matches("^[\\w.]*Error( \\[\\w+])?:.*")) return ": " + s;
+        }
+        List<String> nonBlank = lines.stream().map(String::strip).filter(s -> !s.isEmpty()).toList();
+        if (nonBlank.isEmpty()) return "";
+        return ": " + String.join(" | ", nonBlank.subList(Math.max(0, nonBlank.size() - 3), nonBlank.size()));
     }
 
     /** Send one op and wait for its reply. Throws on transport failure, timeout, or {"ok": false}. */
@@ -112,6 +143,8 @@ public final class ServerClient implements AutoCloseable {
             throw e;
         } catch (java.util.concurrent.TimeoutException e) {
             throw new ServerException(op + " timed out after " + timeoutMs + " ms");
+        } catch (java.util.concurrent.ExecutionException e) {
+            throw new ServerException(op + " failed: " + e.getCause().getMessage());
         } catch (Exception e) {
             throw new ServerException(op + " failed: " + e.getMessage());
         } finally {
