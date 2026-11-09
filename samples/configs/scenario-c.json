@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "profile": "sample-c-profile",
+  "scope": [{ "host": "127.0.0.1", "port": 8088, "pathRegex": "^/api/profile$" }],
+  "keys": {
+    "cKey": { "source": "static", "value": "00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f", "encoding": "hex" }
+  },
+  "ciphers": {
+    "c3": { "alg": "aes-256-gcm", "key": "cKey", "iv": { "from": "prefix", "length": 12 }, "tag": { "length": 16 },
+            "inEncoding": "utf8", "outEncoding": "base64" }
+  },
+  "apply": {
+    "request":  [{ "in": "body", "cipher": "c3" }],
+    "response": [{ "in": "body", "cipher": "c3" }]
+  },
+  "selftest": [
+    { "cipher": "c3", "plain": "{\"name\":\"Alice\",\"email\":\"alice@shop.test\"}",
+      "ciphertext": "BwcHBwcHBwcHBwcHGrRlQpDpTQBqchHPj0r2FKp+zRODpVzdPK0CrPrUSSd2NQkqT9zi+WB5bl7MIOz6hCDXPW5wVxLLeA==" }
+  ]
+}

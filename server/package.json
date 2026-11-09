@@ -1,0 +1,9 @@
+{
+  "name": "cryptotrace-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CryptoTrace local crypto server (stdio, zero runtime dependencies)",
+  "engines": { "node": ">=20" },
+  "scripts": { "start": "node src/main.mjs", "test": "node --test" }
+}

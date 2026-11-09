@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "profile": "sample-a-login",
+  "scope": [{ "host": "127.0.0.1", "port": 8088, "pathRegex": "^/api/login$" }],
+  "keys": {
+    "aKey": { "source": "static", "value": "ct-sample-aes-key-0123456789abcd", "encoding": "utf8" }
+  },
+  "ciphers": {
+    "c1": { "alg": "aes-256-cbc", "key": "aKey", "iv": { "value": "ct-sample-iv-016", "encoding": "utf8" },
+            "padding": "pkcs7", "inEncoding": "utf8", "outEncoding": "base64" }
+  },
+  "apply": {
+    "request":  [{ "in": "json", "path": "$.data", "cipher": "c1" }],
+    "response": [{ "in": "body", "cipher": "c1" }]
+  },
+  "selftest": [
+    { "cipher": "c1", "plain": "{\"id\":\"alice\",\"pw\":\"pw1234\"}", "ciphertext": "HXehilhpKDerwpYGLBYST6sSfDhtBfmrF9qs2RFHQ1k=" }
+  ]
+}
