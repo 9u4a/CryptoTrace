@@ -66,6 +66,14 @@
         return key;
       });
     });
+    // Hashing (SubtleCrypto.digest) — integrity tokens are often built from a digest.
+    wrap(subtle, 'digest', (orig) => function (algorithm, data) {
+      const p = orig.apply(this, arguments);
+      return p.then((out) => {
+        send({ lib: 'webcrypto', op: 'digest', alg: typeof algorithm === 'string' ? { name: algorithm } : algorithm, input: enc(data), output: enc(out), site: site() });
+        return out;
+      });
+    });
     for (const op of ['encrypt', 'decrypt', 'sign', 'verify']) {
       wrap(subtle, op, (orig) => function (algorithm, key, data) {
         const p = orig.apply(this, arguments);
@@ -104,6 +112,23 @@
   const installCryptoJS = (C) => {
     if (!C || C.__ct_wrapped) return;
     C.__ct_wrapped = true;
+    // Hashes and HMACs: integrity tokens (e.g. a "token"/"sign" field) are usually built here.
+    for (const h of ['SHA256', 'SHA1', 'SHA512', 'SHA224', 'SHA384', 'SHA3', 'MD5', 'RIPEMD160']) {
+      if (typeof C[h] !== 'function') continue;
+      wrap(C, h, (orig) => function (message) {
+        const out = orig.apply(this, arguments);
+        send({ lib: 'cryptojs', op: 'hash', alg: { name: h }, input: { encoding: 'utf8', value: String(message) }, output: { encoding: 'hex', value: String(out) }, site: site() });
+        return out;
+      });
+    }
+    for (const h of ['HmacSHA256', 'HmacSHA1', 'HmacSHA512', 'HmacMD5', 'HmacSHA224', 'HmacSHA384']) {
+      if (typeof C[h] !== 'function') continue;
+      wrap(C, h, (orig) => function (message, key) {
+        const out = orig.apply(this, arguments);
+        send({ lib: 'cryptojs', op: 'hmac', alg: { name: h.replace('Hmac', '') }, key: { encoding: 'cryptojs', value: String(key) }, input: { encoding: 'utf8', value: String(message) }, output: { encoding: 'hex', value: String(out) }, site: site() });
+        return out;
+      });
+    }
     for (const algName of ['AES', 'DES', 'TripleDES', 'Rabbit', 'RC4', 'RC4Drop']) {
       const algo = C[algName];
       if (!algo || typeof algo.encrypt !== 'function') continue;
