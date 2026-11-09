@@ -31,4 +31,6 @@ custom-local/
 *.jpg
 *.jpeg
 *.gif
+# ...but the extension's own icons are shipped assets
+!chrome-ext/icons/*.png
 samples/.keys/

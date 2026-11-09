@@ -50,12 +50,22 @@ async function loadHookSource() {
   return hookSource;
 }
 
-// Install binding + persistent script into a target (the tab, or a child session).
-async function installInto(target) {
+// Install binding + hook into a target (the tab, a frame, or a worker session).
+// Workers have no Page domain: they auto-attach paused (waitForDebuggerOnStart), so a
+// direct Runtime.evaluate installs the hook before the worker's own code runs.
+async function installInto(target, isWorker) {
   await cdp('Runtime.enable', {}, target);
   await cdp('Runtime.addBinding', { name: BINDING }, target);
-  await cdp('Page.addScriptToEvaluateOnNewDocument', { source: hookSource }, target).catch(() => {});
+  if (isWorker) {
+    await cdp('Runtime.evaluate', { expression: hookSource }, target).catch((e) =>
+      setStatus('worker hook eval failed: ' + e.message, true),
+    );
+  } else {
+    await cdp('Page.addScriptToEvaluateOnNewDocument', { source: hookSource }, target).catch(() => {});
+  }
 }
+
+const WORKER_TYPES = new Set(['worker', 'service_worker', 'shared_worker']);
 
 async function attach() {
   await loadHookSource();
@@ -92,13 +102,17 @@ function onEvent(source, method, params) {
   }
   if (method === 'Target.attachedToTarget') {
     const sessionId = params.sessionId;
+    const type = params.targetInfo && params.targetInfo.type;
+    const isWorker = WORKER_TYPES.has(type);
     childSessions.add(sessionId);
     // chrome.debugger (unlike raw CDP) needs the tabId on every debuggee, even a child
     // session — sessionId rides alongside it, not on its own.
     const child = { tabId, sessionId };
     (async () => {
       try {
-        await installInto(child);
+        await installInto(child, isWorker);
+        // reach a worker's own nested workers / a frame's children too
+        await cdp('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, child).catch(() => {});
         await cdp('Runtime.runIfWaitingForDebugger', {}, child).catch(() => {});
       } catch (e) {
         setStatus('worker/iframe hook failed: ' + e.message, true);
