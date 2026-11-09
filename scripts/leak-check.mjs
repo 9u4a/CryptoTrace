@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 const TLDS = 'com|net|org|io|kr|co|dev|app|biz|info|me|xyz|cloud|ai|gov|edu|jp|cn|us|uk|de|site|online|shop|tech';
 const DOMAIN_RE = new RegExp(
-  String.raw`(?<![\w.-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:${TLDS}|test|example|invalid|localhost))(?![\w-])`,
+  String.raw`(?<![\w.-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:${TLDS}|test|example|invalid|localhost))(?![\w-]|\.\w)`, // `.\w` after: package name (java.io.File), not a host
   'gi',
 );
 const SAFE_TLDS = ['test', 'example', 'invalid', 'localhost'];

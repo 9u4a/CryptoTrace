@@ -20,7 +20,7 @@ test('hostname rule also applies inside samples/', () => {
 });
 
 test('ignores file names and Java packages', () => {
-  assert.deepEqual(scanText('a.md', 'edit config.json and burp.api.montoya.MontoyaApi', allow), []);
+  assert.deepEqual(scanText('a.md', 'edit config.json and burp.api.montoya.MontoyaApi; import java.io.IOException; java.net.URLEncoder', allow), []);
 });
 
 test('public IP flagged, private/loopback/doc ranges allowed', () => {

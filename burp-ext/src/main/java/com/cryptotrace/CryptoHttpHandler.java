@@ -1,0 +1,72 @@
+package com.cryptotrace;
+
+import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.core.ToolType;
+import burp.api.montoya.http.HttpService;
+import burp.api.montoya.http.handler.HttpHandler;
+import burp.api.montoya.http.handler.HttpRequestToBeSent;
+import burp.api.montoya.http.handler.HttpResponseReceived;
+import burp.api.montoya.http.handler.RequestToBeSentAction;
+import burp.api.montoya.http.handler.ResponseReceivedAction;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * Requests carrying "X-CT-Plain: 1" are encrypted right before they leave Burp (Repeater, Intruder, Scanner...).
+ * If encryption fails the request is NOT sent in plaintext: it is diverted to a closed local port and annotated.
+ * Responses to requests we encrypted are decrypted for the tool (never for Proxy, so the browser gets the original).
+ */
+public final class CryptoHttpHandler implements HttpHandler {
+    /** Discard port on loopback: the connection fails locally, nothing reaches the target. */
+    private static final HttpService BLACKHOLE = HttpService.httpService("127.0.0.1", 9, false);
+    public static final String DECRYPTED_MARKER = "X-CT-Decrypted";
+
+    private final MontoyaApi api;
+    private final Crypto crypto;
+    private final Settings settings;
+    private final Map<Integer, HttpRequest> encryptedPlain = new ConcurrentHashMap<>();
+
+    public CryptoHttpHandler(MontoyaApi api, Crypto crypto, Settings settings) {
+        this.api = api;
+        this.crypto = crypto;
+        this.settings = settings;
+    }
+
+    @Override
+    public RequestToBeSentAction handleHttpRequestToBeSent(HttpRequestToBeSent req) {
+        if (!req.hasHeader(Crypto.PLAIN_MARKER)) return RequestToBeSentAction.continueWith(req);
+        String why;
+        try {
+            Crypto.Result<HttpRequest> enc = crypto.encryptRequest(req);
+            if (enc.matched() != null && enc.allOk()) {
+                encryptedPlain.put(req.messageId(), req);
+                return RequestToBeSentAction.continueWith(enc.message());
+            }
+            why = enc.matched() == null ? "no profile matches this host/path" : enc.errors();
+        } catch (ServerClient.ServerException e) {
+            why = e.getMessage();
+        }
+        String note = "CryptoTrace BLOCKED (not sent): " + why;
+        api.logging().logToError(note + " — " + req.url());
+        return RequestToBeSentAction.continueWith(req.withService(BLACKHOLE), req.annotations().withNotes(note));
+    }
+
+    @Override
+    public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived res) {
+        HttpRequest plain = encryptedPlain.remove(res.messageId());
+        if (plain == null || !settings.decryptResponses() || res.toolSource().isFromTool(ToolType.PROXY)) {
+            return ResponseReceivedAction.continueWith(res);
+        }
+        try {
+            Crypto.Result<HttpResponse> dec = crypto.decryptResponse(res.initiatingRequest(), res);
+            if (dec.matched() == null || !dec.allOk()) return ResponseReceivedAction.continueWith(res);
+            return ResponseReceivedAction.continueWith(dec.message().withAddedHeader(DECRYPTED_MARKER, "1"));
+        } catch (ServerClient.ServerException e) {
+            api.logging().logToError("CryptoTrace response decrypt failed: " + e.getMessage());
+            return ResponseReceivedAction.continueWith(res);
+        }
+    }
+}
