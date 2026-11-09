@@ -7,11 +7,21 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import crypto from 'node:crypto';
 import { createEngine } from '../../server/src/engine.mjs';
 import { aesCbcEncrypt, gcmEncrypt, C_KEY } from '../../samples/server.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+const CryptoJS = require(path.join(HERE, '../../samples/public/vendor/crypto-js-4.2.0.js'));
+
+function loadIntoEngine(cfg) {
+  const { cfg: file, dir } = write(cfg);
+  const res = createEngine().handle({ op: 'load', files: [file] }).results[0];
+  fs.rmSync(dir, { recursive: true, force: true });
+  return res;
+}
 
 function loadBuilder() {
   const src = fs.readFileSync(path.join(HERE, '../config-builder.js'), 'utf8');
@@ -90,6 +100,46 @@ test('correlated apply + RSA note survive into the config', () => {
   assert.equal(JSON.stringify(cfg.apply.request[0]), JSON.stringify({ in: 'json', path: '$.data', cipher: 'c1' }));
   assert.equal(cfg.ciphers.c2.alg, 'rsa');
   assert.match(cfg.ciphers.c2._note, /publicKey\/privateKey/);
+});
+
+test('CryptoJS AES-128 WordArray key -> aes-128-cbc (not 256) and self-tests', () => {
+  const buildConfig = loadBuilder();
+  const keyHex = '00112233445566778899aabbccddeeff'; // 16 bytes = AES-128  leakcheck:allow
+  const ivHex = '0102030405060708090a0b0c0d0e0f10'; // leakcheck:allow
+  const plain = '{"timeout":0,"useTimeout":false}';
+  const ct = CryptoJS.AES.encrypt(plain, CryptoJS.enc.Hex.parse(keyHex), { iv: CryptoJS.enc.Hex.parse(ivHex) }).toString();
+  const records = [{
+    lib: 'cryptojs', op: 'encrypt', alg: { name: 'AES' }, padding: 'Pkcs7',
+    key: { encoding: 'cryptojs', value: keyHex }, iv: { encoding: 'cryptojs', value: ivHex },
+    input: { encoding: 'utf8', value: plain }, output: { encoding: 'cryptojs', value: ct }, frame: 'http://127.0.0.1:8088/',
+  }];
+  const cfg = buildConfig(records);
+  const cid = Object.keys(cfg.ciphers)[0];
+  assert.equal(cfg.ciphers[cid].alg, 'aes-128-cbc'); // the "Invalid key length" regression
+  cfg.selftest = [{ cipher: cid, plain, ciphertext: ct }];
+  const res = loadIntoEngine(cfg);
+  assert.equal(res.error, undefined, res.error);
+  assert.ok(res.selftest.every((t) => t.ok), JSON.stringify(res.selftest));
+});
+
+test('CryptoJS passphrase mode -> openssl-md5 kdf and self-tests', () => {
+  const buildConfig = loadBuilder();
+  const pass = 'secretpass';
+  const plain = 'hello world';
+  const ct = CryptoJS.AES.encrypt(plain, pass).toString(); // Salted__ blob
+  assert.match(ct, /^U2FsdGVkX1/);
+  const records = [{
+    lib: 'cryptojs', op: 'encrypt', alg: { name: 'AES' }, padding: 'Pkcs7',
+    key: { encoding: 'cryptojs', value: pass },
+    input: { encoding: 'utf8', value: plain }, output: { encoding: 'cryptojs', value: ct }, frame: 'http://127.0.0.1:8088/',
+  }];
+  const cfg = buildConfig(records);
+  const cid = Object.keys(cfg.ciphers)[0];
+  assert.equal(cfg.ciphers[cid].kdf, 'openssl-md5');
+  cfg.selftest = [{ cipher: cid, plain, ciphertext: ct }];
+  const res = loadIntoEngine(cfg);
+  assert.equal(res.error, undefined, res.error);
+  assert.ok(res.selftest.every((t) => t.ok), JSON.stringify(res.selftest));
 });
 
 function write(cfg) {

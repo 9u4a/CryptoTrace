@@ -75,6 +75,51 @@ export function symmetricCipher(spec, keyBytes) {
   };
 }
 
+// OpenSSL EVP_BytesToKey (MD5) — how CryptoJS derives key+IV from a string passphrase.
+function evpBytesToKey(passphrase, salt, keyLen, ivLen) {
+  let data = Buffer.alloc(0);
+  let prev = Buffer.alloc(0);
+  while (data.length < keyLen + ivLen) {
+    prev = crypto.createHash('md5').update(Buffer.concat([prev, passphrase, salt])).digest();
+    data = Buffer.concat([data, prev]);
+  }
+  return { key: data.subarray(0, keyLen), iv: data.subarray(keyLen, keyLen + ivLen) };
+}
+
+/**
+ * CryptoJS passphrase mode: `CryptoJS.AES.encrypt(plain, "string")`.
+ * Output is base64("Salted__" + salt[8] + ciphertext); key+IV come from the passphrase
+ * and salt via EVP_BytesToKey(MD5). spec: { alg: aes-256-cbc, kdf: "openssl-md5" }.
+ * passBytes: the passphrase (utf8 bytes).
+ */
+export function opensslPassphraseCipher(spec, passBytes) {
+  const alg = (spec.alg || 'aes-256-cbc').toLowerCase();
+  if (!OPENSSL.has(alg)) throw new Error(`cipher "${alg}" not available in this Node/OpenSSL build`);
+  const keyLen = Number((alg.match(/-(\d+)-/) || [])[1] || 256) / 8;
+  const ivLen = 16;
+  const inEnc = spec.inEncoding || 'utf8';
+  const outEnc = spec.outEncoding || 'base64';
+  const MAGIC = Buffer.from('Salted__', 'binary');
+  return {
+    deterministic: false, // random salt each time
+    encrypt(plain) {
+      const salt = crypto.randomBytes(8);
+      const { key, iv } = evpBytesToKey(passBytes, salt, keyLen, ivLen);
+      const c = crypto.createCipheriv(alg, key, iv);
+      const body = Buffer.concat([c.update(toBytes(plain, inEnc)), c.final()]);
+      return fromBytes(Buffer.concat([MAGIC, salt, body]), outEnc);
+    },
+    decrypt(text) {
+      const raw = toBytes(text.trim(), outEnc);
+      if (!raw.subarray(0, 8).equals(MAGIC)) throw new Error('not an OpenSSL "Salted__" blob (passphrase mode expected)');
+      const salt = raw.subarray(8, 16);
+      const { key, iv } = evpBytesToKey(passBytes, salt, keyLen, ivLen);
+      const d = crypto.createDecipheriv(alg, key, iv);
+      return fromBytes(Buffer.concat([d.update(raw.subarray(16)), d.final()]), inEnc);
+    },
+  };
+}
+
 function asKeyObject(bytesOrPem, kind) {
   const s = bytesOrPem.toString('utf8');
   if (s.includes('-----BEGIN')) return kind === 'public' ? crypto.createPublicKey(s) : crypto.createPrivateKey(s);

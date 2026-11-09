@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { toBytes } from './encoding.mjs';
-import { symmetricCipher, rsaCipher } from './cipher.mjs';
+import { symmetricCipher, rsaCipher, opensslPassphraseCipher } from './cipher.mjs';
 import { loadCustomCipher } from './custom.mjs';
 import { parsePath } from './jsonpath.mjs';
 
@@ -38,6 +38,8 @@ function buildCipher(file, name, spec, keys) {
   if (spec.alg.toLowerCase() === 'rsa') return rsaCipher(spec, keyOf(spec.publicKey), keyOf(spec.privateKey));
   const key = keyOf(spec.key);
   if (!key) fail(file, `cipher "${name}": needs "key"`);
+  if (spec.kdf === 'openssl-md5') return opensslPassphraseCipher(spec, key); // CryptoJS passphrase mode
+  if (spec.kdf) fail(file, `cipher "${name}": unknown kdf "${spec.kdf}"`);
   return symmetricCipher(spec, key);
 }
 

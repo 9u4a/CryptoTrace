@@ -4,25 +4,41 @@
  * Heuristic: the analyst reviews keys, encodings and scope before use. Produces
  * schemaVersion 1 (see server/src/profile.mjs). Exposed as window.buildConfig. */
 (function () {
+  // Key byte length drives AES-128/192/256 — the #1 cause of "Invalid key length" is
+  // assuming 256 for what is really a 16-byte (128-bit) key.
+  function hexByteLen(v) { const s = String(v || ''); return /^[0-9a-fA-F]+$/.test(s) && s.length % 2 === 0 ? s.length / 2 : 0; }
+  function b64ByteLen(v) { const s = String(v || '').replace(/=+$/, ''); return Math.floor((s.length * 3) / 4); }
+  function keyByteLen(k) {
+    if (!k || k.value == null) return 0;
+    return k.encoding === 'base64' ? b64ByteLen(k.value) : (hexByteLen(k.value) || 0);
+  }
+  function aesBits(bytes) { return bytes === 16 ? 128 : bytes === 24 ? 192 : bytes === 32 ? 256 : 256; }
+
   // WebCrypto algorithm object -> server cipher spec (alg + hints). Returns null if unknown.
-  function webcryptoAlg(alg) {
+  function webcryptoAlg(alg, keyBytes) {
     if (!alg || !alg.name) return null;
     const name = alg.name.toUpperCase();
-    if (name === 'AES-GCM') return { alg: 'aes-256-gcm', iv: { from: 'prefix', length: 12 }, tag: { length: 16 } };
-    if (name === 'AES-CBC') return { alg: 'aes-256-cbc', padding: 'pkcs7' };
-    if (name === 'AES-CTR') return { alg: 'aes-256-ctr' };
+    const bits = aesBits(keyBytes);
+    if (name === 'AES-GCM') return { alg: `aes-${bits}-gcm`, iv: { from: 'prefix', length: 12 }, tag: { length: 16 } };
+    if (name === 'AES-CBC') return { alg: `aes-${bits}-cbc`, padding: 'pkcs7' };
+    if (name === 'AES-CTR') return { alg: `aes-${bits}-ctr` };
     if (name === 'RSA-OAEP') return { alg: 'rsa', padding: 'oaep', oaepHash: (alg.hash && (alg.hash.name || alg.hash)) ? String(alg.hash.name || alg.hash).replace('SHA-', 'sha').toLowerCase() : 'sha1' };
     return null;
   }
 
-  function cryptojsAlg(rec) {
+  function cryptojsAlg(rec, keyBytes) {
+    // Passphrase mode: `AES.encrypt(plain, "string")` emits base64("Salted__"+salt+ct),
+    // and key+IV come from OpenSSL EVP_BytesToKey — the server handles this via kdf.
+    const out = String((rec.output && rec.output.value) || '');
+    if (/^U2FsdGVkX1/.test(out)) {
+      return { alg: 'aes-256-cbc', kdf: 'openssl-md5', inEncoding: 'utf8', outEncoding: 'base64', _passphrase: true };
+    }
     const name = (rec.alg && rec.alg.name) || 'AES';
-    const map = { AES: 'aes-256-cbc', DES: 'des-cbc', TripleDES: 'des-ede3-cbc' };
-    const spec = { alg: map[name] || 'aes-256-cbc', padding: (rec.padding || 'Pkcs7').toLowerCase().includes('pkcs') ? 'pkcs7' : 'none' };
-    // CryptoJS default output is an OpenSSL "Salted__" base64 blob unless key/iv are WordArrays.
-    spec.inEncoding = 'utf8';
-    spec.outEncoding = 'base64';
-    return spec;
+    let alg;
+    if (name === 'DES') alg = 'des-cbc';
+    else if (name === 'TripleDES') alg = 'des-ede3-cbc';
+    else alg = `aes-${aesBits(keyBytes)}-cbc`; // WordArray key + explicit IV
+    return { alg, padding: (rec.padding || 'Pkcs7').toLowerCase().includes('pkcs') ? 'pkcs7' : 'none', inEncoding: 'utf8', outEncoding: 'base64' };
   }
 
   // Guess byte-encoding of a captured key/iv string.
@@ -76,8 +92,9 @@
       if (r.lib === 'transport' || (r.op !== 'encrypt' && r.op !== 'decrypt')) continue;
       if (r.frame) hosts.add(hostFromFrame(r.frame));
       let spec = null;
-      if (r.lib === 'webcrypto') spec = webcryptoAlg(r.alg);
-      else if (r.lib === 'cryptojs') spec = cryptojsAlg(r);
+      const keyBytes = keyByteLen(r.key);
+      if (r.lib === 'webcrypto') spec = webcryptoAlg(r.alg, keyBytes);
+      else if (r.lib === 'cryptojs') spec = cryptojsAlg(r, keyBytes);
       else if (r.lib === 'jsencrypt') spec = { alg: 'rsa', padding: 'pkcs1' };
       if (!spec) continue;
 
@@ -86,9 +103,14 @@
         cfg.ciphers[id] = spec; // keys (public/private) must be filled in by the analyst
         spec._note = 'RSA: add publicKey/privateKey (DER base64 or PEM) manually';
       } else {
-        const ke = keyEntry(r.key);
+        const passphrase = spec._passphrase;
+        delete spec._passphrase;
+        // passphrase mode stores the string passphrase (utf8); the salt/IV are derived per message
+        const ke = passphrase
+          ? { source: 'static', value: String(r.key && r.key.value), encoding: 'utf8' }
+          : keyEntry(r.key);
         if (ke) spec.key = keyNameFor(ke);
-        if (r.iv && r.iv.value && !spec.iv) spec.iv = { value: r.iv.value, encoding: r.iv.encoding === 'base64' ? 'base64' : 'hex' };
+        if (!passphrase && r.iv && r.iv.value && !spec.iv) spec.iv = { value: r.iv.value, encoding: r.iv.encoding === 'base64' ? 'base64' : 'hex' };
         cfg.ciphers[id] = spec;
       }
 
