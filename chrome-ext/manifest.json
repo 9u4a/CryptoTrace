@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "CryptoTrace",
+  "version": "0.1.0",
+  "description": "Trace client-side crypto calls while debugging, and export an algorithm/key/location config for the CryptoTrace Burp extension.",
+  "permissions": ["debugger", "storage"],
+  "devtools_page": "devtools.html",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "CryptoTrace",
+    "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+  },
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+}

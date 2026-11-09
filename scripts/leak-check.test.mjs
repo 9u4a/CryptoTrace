@@ -53,3 +53,11 @@ test('path: allowlist entries skip vendored files only', () => {
   assert.deepEqual(scanText('samples/public/vendor/lib.js', `https://${realHost}`, allowV), []);
   assert.deepEqual(rules(scanText('samples/public/app.js', `https://${realHost}`, allowV)), ['hostname']);
 });
+
+test('bare word.tld member access in code is not a hostname, but URLs and multi-label still flag', () => {
+  assert.deepEqual(scanText('panel.js', 'if (rec.site && a.app) return obj.io;', allow), []);
+  assert.deepEqual(rules(scanText('panel.js', 'fetch("https://acme.site/x")', allow)), ['hostname']);  // leakcheck:allow
+  assert.deepEqual(rules(scanText('panel.js', 'const h = api.acme.site;', allow)), ['hostname']);  // leakcheck:allow
+  // In docs/markdown, even a bare one-dot host is flagged (pasted target data risk).
+  assert.deepEqual(rules(scanText('docs/x.md', 'target acme.site', allow)), ['hostname']);  // leakcheck:allow
+});

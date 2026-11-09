@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>CryptoTrace Panel</title>
+<style>
+  :root {
+    --bg: #ffffff; --toolbar: #f3f3f3; --text: #202124; --muted: #5f6368;
+    --border: #cacccd; --input-bg: #ffffff; --accent: #1a73e8; --btn-bg: #ffffff;
+    --btn-hover: #e8eaed; --on: #188038; --off: #5f6368; --row-alt: #f8f9fa;
+  }
+  body.theme-dark {
+    --bg: #282828; --toolbar: #333333; --text: #e3e3e3; --muted: #9aa0a6;
+    --border: #494c50; --input-bg: #1e1e1e; --accent: #8ab4f8; --btn-bg: #3c4043;
+    --btn-hover: #4a4e52; --on: #81c995; --off: #9aa0a6; --row-alt: #2d2d2d;
+  }
+  @media (prefers-color-scheme: dark) {
+    body:not(.theme-light) {
+      --bg: #282828; --toolbar: #333333; --text: #e3e3e3; --muted: #9aa0a6;
+      --border: #494c50; --input-bg: #1e1e1e; --accent: #8ab4f8; --btn-bg: #3c4043;
+      --btn-hover: #4a4e52; --on: #81c995; --off: #9aa0a6; --row-alt: #2d2d2d;
+    }
+  }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text); font: 12px system-ui, sans-serif; display: flex; flex-direction: column; }
+  #toolbar { background: var(--toolbar); border-bottom: 1px solid var(--border); padding: 6px 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  button { background: var(--btn-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; cursor: pointer; }
+  button:hover { background: var(--btn-hover); }
+  button.on { border-color: var(--on); color: var(--on); font-weight: 600; }
+  .sep { flex: 1; }
+  #status { color: var(--muted); }
+  #count { color: var(--muted); }
+  #list { flex: 1; overflow: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--toolbar); z-index: 1; }
+  tr:nth-child(even) td { background: var(--row-alt); }
+  td.val { max-width: 320px; overflow: hidden; text-overflow: ellipsis; font-family: monospace; }
+  .loc.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+  .tag { display: inline-block; padding: 0 5px; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); }
+  .apply { color: var(--on); }
+  #empty { padding: 24px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <button id="hook">Hook OFF</button>
+  <button id="clear">Clear</button>
+  <span class="sep"></span>
+  <span id="count">0 calls</span>
+  <button id="export">Export config.json</button>
+  <span id="status"></span>
+</div>
+<div id="list">
+  <div id="empty">Hook ON을 누르면 탭을 새로고침하고 암호화 호출을 기록합니다.</div>
+  <table id="table" hidden>
+    <thead><tr>
+      <th>#</th><th>lib</th><th>op</th><th>alg</th><th>key</th><th>iv</th>
+      <th>input</th><th>output</th><th>apply</th><th>site</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+<script src="config-builder.js"></script>
+<script src="panel.js"></script>
+</body>
+</html>

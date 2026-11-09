@@ -86,6 +86,9 @@ export function scanText(path, text, allow) {
   // `path:<prefix>` entries skip unmodified third-party files (e.g. vendored libraries).
   if (allow.some((a) => a.startsWith('path:') && p.startsWith(a.slice(5)))) return out;
   const inSamples = p.startsWith('samples/');
+  // Where pasted target data would land, check strictly; in code, a bare `word.tld` member
+  // access (one dot, not in a URL/string) is almost always an identifier, not a hostname.
+  const strict = inSamples || p.startsWith('docs/') || /\.(md|txt|json|html?|csv)$/i.test(p);
 
   if (!inSamples && isExportedConfig(p, text)) {
     out.push({ path: p, line: 1, rule: 'exported-config', value: 'CryptoTrace config outside samples/' });
@@ -96,7 +99,10 @@ export function scanText(path, text, allow) {
     const hit = (rule, value) => out.push({ path: p, line: i + 1, rule, value: mask(value) });
 
     for (const m of line.matchAll(DOMAIN_RE)) {
-      if (!domainAllowed(m[1], allow)) hit('hostname', m[1]);
+      if (domainAllowed(m[1], allow)) continue;
+      const before = m.index > 0 ? line[m.index - 1] : '';
+      const codeLike = !strict && m[1].split('.').length === 2 && !'/@"\''.includes(before);
+      if (!codeLike) hit('hostname', m[1]);
     }
     for (const m of line.matchAll(IPV4_RE)) {
       if (isPublicIp(m[1])) hit('public-ip', m[1]);
