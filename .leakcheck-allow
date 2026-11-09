@@ -1,0 +1,18 @@
+# Public infrastructure / documentation domains that may appear in tracked files.
+# Never add a client or engagement target here. *.test / *.example / *.invalid / localhost are always allowed.
+github.com
+githubusercontent.com
+shields.io
+example.com
+example.org
+example.net
+chrome.google.com
+chromewebstore.google.com
+developer.chrome.com
+portswigger.net
+nodejs.org
+gradle.org
+apache.org
+opensource.org
+w3.org
+mozilla.org
