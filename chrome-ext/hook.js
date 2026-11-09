@@ -99,8 +99,11 @@
     } catch (_) { /* already non-configurable */ }
   };
 
-  // CryptoJS: AES/DES/TripleDES/Rabbit/RC4 .encrypt/.decrypt + HmacSHA*
-  trapGlobal('CryptoJS', (C) => {
+  // CryptoJS: AES/DES/TripleDES/Rabbit/RC4 .encrypt/.decrypt. Reused for both the
+  // global and any bundled copy found inside a webpack module.
+  const installCryptoJS = (C) => {
+    if (!C || C.__ct_wrapped) return;
+    C.__ct_wrapped = true;
     for (const algName of ['AES', 'DES', 'TripleDES', 'Rabbit', 'RC4', 'RC4Drop']) {
       const algo = C[algName];
       if (!algo || typeof algo.encrypt !== 'function') continue;
@@ -120,7 +123,80 @@
         return out;
       });
     }
-  });
+  };
+  trapGlobal('CryptoJS', installCryptoJS);
+
+  // ---- bundled libraries (webpack) ---------------------------------------
+  // Real apps bundle crypto-js inside webpack modules, off `window`. Intercept the
+  // chunk loader, wrap each module factory, and when its exports look like a known
+  // library, hook it with the same installer used for the global.
+  const isCryptoJS = (x) => x && x.AES && typeof x.AES.encrypt === 'function' && x.enc && x.lib;
+  const scanExports = (exp) => {
+    if (!exp || typeof exp !== 'object') return;
+    for (const cand of [exp, exp.default]) if (isCryptoJS(cand)) installCryptoJS(cand);
+  };
+  const wrapFactories = (modules) => {
+    if (!modules || typeof modules !== 'object') return;
+    for (const id of Object.keys(modules)) {
+      const f = modules[id];
+      if (typeof f !== 'function' || f.__ct_fw) continue;
+      const wrapped = function (module, exports, require) {
+        const r = f.apply(this, arguments);
+        try { scanExports(module && module.exports); } catch (_) {}
+        return r;
+      };
+      wrapped.__ct_fw = true;
+      modules[id] = wrapped;
+    }
+  };
+  // A loaded chunk is `[[chunkIds], modules, ...]`; modules is `{id: factory}`.
+  const hookChunkArray = (arr) => {
+    if (!arr || arr.__ct_push) return;
+    let realPush = arr.push;
+    try {
+      Object.defineProperty(arr, 'push', {
+        configurable: true,
+        get() {
+          return function (...items) {
+            for (const item of items) { try { wrapFactories(item && item[1]); } catch (_) {} }
+            return realPush.apply(arr, items);
+          };
+        },
+        set(fn) { realPush = fn; }, // webpack installs its own callback here
+      });
+      arr.__ct_push = true;
+      for (const item of arr) { try { wrapFactories(item && item[1]); } catch (_) {} } // already-queued chunks
+    } catch (_) {}
+  };
+  // webpack 1 uses a function; 2/3 an array named `webpackJsonp`.
+  const trapWebpackJsonp = () => {
+    if (globalThis.webpackJsonp) {
+      if (Array.isArray(globalThis.webpackJsonp)) hookChunkArray(globalThis.webpackJsonp);
+      return;
+    }
+    let val;
+    try {
+      Object.defineProperty(globalThis, 'webpackJsonp', {
+        configurable: true,
+        get: () => val,
+        set: (v) => {
+          if (typeof v === 'function') {
+            const orig = v;
+            val = function (chunkIds, modules) { try { wrapFactories(modules); } catch (_) {} return orig.apply(this, arguments); };
+          } else { if (Array.isArray(v)) hookChunkArray(v); val = v; }
+        },
+      });
+    } catch (_) {}
+  };
+  trapWebpackJsonp();
+  // webpack 4/5 use a per-build `webpackChunk<name>` array — poll briefly for it.
+  let polls = 0;
+  const chunkPoll = setInterval(() => {
+    for (const k of Object.keys(globalThis)) {
+      if (/^webpackChunk/.test(k) && Array.isArray(globalThis[k])) hookChunkArray(globalThis[k]);
+    }
+    if (++polls > 40) clearInterval(chunkPoll);
+  }, 300);
 
   // JSEncrypt (RSA)
   trapGlobal('JSEncrypt', (J) => {
