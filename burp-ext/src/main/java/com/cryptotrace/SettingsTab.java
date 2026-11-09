@@ -64,7 +64,7 @@ public final class SettingsTab {
         form.add(row(new JLabel("Launcher (node or crypto-server.exe):"), launcher));
         JButton browseScript = new JButton("Browse…");
         browseScript.addActionListener(e -> choose(false).stream().findFirst().ifPresent(script::setText));
-        form.add(row(new JLabel("Server script (server/src/main.mjs):"), script, browseScript));
+        form.add(row(new JLabel("Server script (blank = auto-detect from jar location):"), script, browseScript));
 
         JList<String> list = new JList<>(configs);
         list.setVisibleRowCount(5);
@@ -114,8 +114,20 @@ public final class SettingsTab {
     /** Persist the form, (re)start the server process and load configs. Runs off the EDT. */
     public void startServer() {
         List<String> files = new ArrayList<>(Collections.list(configs.elements()));
-        settings.launcher(launcher.getText());
-        settings.script(script.getText());
+        String l = Settings.unquote(launcher.getText());
+        String s = Settings.unquote(script.getText());
+        if (l.toLowerCase().matches(".*\\.(mjs|js)$")) { // script pasted into the launcher field
+            if (s.isEmpty()) s = l;
+            l = "node";
+        }
+        settings.launcher(l);
+        settings.script(s);
+        String shownLauncher = settings.launcher();
+        String shownScript = settings.script();
+        SwingUtilities.invokeLater(() -> {
+            launcher.setText(shownLauncher);
+            script.setText(shownScript);
+        });
         settings.configs(files);
         String problem = preflight(settings.launcher(), settings.script(), settings.configs());
         if (problem != null) {

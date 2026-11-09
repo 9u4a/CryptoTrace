@@ -8,7 +8,7 @@ public final class CryptoTraceExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("CryptoTrace");
-        Settings settings = new Settings(api.persistence().preferences());
+        Settings settings = new Settings(api.persistence().preferences(), api.extension().filename());
 
         final SettingsTab[] tab = new SettingsTab[1];
         ServerClient server = new ServerClient(line -> {

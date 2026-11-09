@@ -31,6 +31,15 @@ class StartupDiagnosticsTest {
     }
 
     @Test
+    void locatesServerScriptFromJarPath() {
+        String jar = ROOT.resolve("burp-ext/build/libs/cryptotrace-0.1.0-all.jar").toString();
+        assertEquals(ROOT.resolve("server/src/main.mjs").toAbsolutePath().normalize().toString(),
+                Path.of(Settings.locateScript(jar)).normalize().toString());
+        assertEquals("", Settings.locateScript("C:\\nowhere\\x.jar"));
+        assertEquals("", Settings.locateScript(null));
+    }
+
+    @Test
     void exitReasonIncludesNodeError() throws Exception {
         try (ServerClient c = new ServerClient(l -> { }, 5000)) {
             c.start(ServerClient.command("node", ROOT.resolve("does-not-exist.mjs").toString()));

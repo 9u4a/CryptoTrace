@@ -13,9 +13,31 @@ public final class Settings {
     private static final String DECRYPT_RESPONSES = "cryptotrace.decryptResponses";
 
     private final Preferences prefs;
+    private final String defaultScript;
 
-    public Settings(Preferences prefs) {
+    /** extensionJar: Burp's path to our jar, used to find <repo>/server/src/main.mjs when the field is empty. */
+    public Settings(Preferences prefs, String extensionJar) {
         this.prefs = prefs;
+        this.defaultScript = locateScript(extensionJar);
+    }
+
+    /** <repo>/burp-ext/build/libs/cryptotrace-x-all.jar -> <repo>/server/src/main.mjs, if it exists. */
+    static String locateScript(String jar) {
+        if (jar == null || jar.isBlank()) return "";
+        try {
+            java.nio.file.Path p = java.nio.file.Path.of(jar).toAbsolutePath().getParent();
+            for (int i = 0; i < 5 && p != null; i++, p = p.getParent()) {
+                java.nio.file.Path candidate = p.resolve("server").resolve("src").resolve("main.mjs");
+                if (java.nio.file.Files.isRegularFile(candidate)) return candidate.toString();
+            }
+        } catch (RuntimeException ignored) {
+            // invalid path
+        }
+        return "";
+    }
+
+    public String defaultScript() {
+        return defaultScript;
     }
 
     /** Executable: "node" (or full path to node.exe), or the packaged crypto-server.exe. */
@@ -30,7 +52,8 @@ public final class Settings {
 
     /** Path to server/src/main.mjs when launching through node; empty for the packaged exe. */
     public String script() {
-        return unquote(prefs.getString(SCRIPT));
+        String v = unquote(prefs.getString(SCRIPT));
+        return v.isEmpty() ? defaultScript : v;
     }
 
     public void script(String v) {
