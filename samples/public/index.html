@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>CryptoTrace Sample Target</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
+  fieldset { margin: 0 0 16px; border: 1px solid #ccc; border-radius: 6px; }
+  legend { font-weight: 600; }
+  input { margin: 2px 6px 2px 0; }
+  pre { background: #f4f4f4; padding: 8px; white-space: pre-wrap; word-break: break-all; min-height: 3em; }
+</style>
+</head>
+<body>
+<h1>CryptoTrace Sample Target</h1>
+<p>Self-made test page. All keys are fake. Open DevTools → CryptoTrace, Hook ON, then press the buttons.</p>
+
+<fieldset>
+  <legend>A. Login — CryptoJS AES-256-CBC (JSON field <code>$.data</code>, response body)</legend>
+  <input id="a-id" value="alice"> <input id="a-pw" type="password" value="pw1234">
+  <button id="a-go">Login</button>
+</fieldset>
+
+<fieldset>
+  <legend>B. Transfer — WebCrypto RSA-OAEP envelope + per-request AES-GCM key</legend>
+  <input id="b-to" value="110-222-333333"> <input id="b-amount" value="10000">
+  <button id="b-go">Transfer</button>
+</fieldset>
+
+<fieldset>
+  <legend>C. Profile — WebCrypto AES-GCM inside a Web Worker (whole body, IV prefix)</legend>
+  <input id="c-name" value="Alice"> <input id="c-email" value="alice@shop.test">
+  <button id="c-go">Save</button>
+</fieldset>
+
+<h2>Log</h2>
+<pre id="log"></pre>
+
+<script src="vendor/crypto-js-4.2.0.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

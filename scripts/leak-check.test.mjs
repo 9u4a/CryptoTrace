@@ -47,3 +47,9 @@ test('exported config outside samples/ is blocked', () => {
 test('inline allow marker suppresses a line', () => {
   assert.deepEqual(scanText('a.md', `https://${realHost} leakcheck:allow`, allow), []);
 });
+
+test('path: allowlist entries skip vendored files only', () => {
+  const allowV = loadAllowlist(['path:samples/public/vendor/'].join('\n'));
+  assert.deepEqual(scanText('samples/public/vendor/lib.js', `https://${realHost}`, allowV), []);
+  assert.deepEqual(rules(scanText('samples/public/app.js', `https://${realHost}`, allowV)), ['hostname']);
+});

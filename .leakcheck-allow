@@ -16,3 +16,6 @@ apache.org
 opensource.org
 w3.org
 mozilla.org
+
+# Unmodified third-party files (path prefix). Keep vendored code here only — never engagement data.
+path:samples/public/vendor/

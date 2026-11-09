@@ -33,7 +33,7 @@ export function loadAllowlist(text) {
 function domainAllowed(domain, allow) {
   const d = domain.toLowerCase();
   if (SAFE_TLDS.includes(d.split('.').pop())) return true;
-  return allow.some((a) => d === a || d.endsWith('.' + a));
+  return allow.some((a) => !a.startsWith('path:') && (d === a || d.endsWith('.' + a)));
 }
 
 function isPublicIp(ip) {
@@ -83,6 +83,8 @@ const mask = (s) => (s.length > 10 ? s.slice(0, 6) + '…(' + s.length + ')' : s
 export function scanText(path, text, allow) {
   const out = [];
   const p = path.replace(/\\/g, '/');
+  // `path:<prefix>` entries skip unmodified third-party files (e.g. vendored libraries).
+  if (allow.some((a) => a.startsWith('path:') && p.startsWith(a.slice(5)))) return out;
   const inSamples = p.startsWith('samples/');
 
   if (!inSamples && isExportedConfig(p, text)) {
