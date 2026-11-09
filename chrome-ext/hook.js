@@ -150,23 +150,31 @@
     }
   };
   // A loaded chunk is `[[chunkIds], modules, ...]`; modules is `{id: factory}`.
+  const scanQueue = (arr) => { for (const item of arr) { try { wrapFactories(item && item[1]); } catch (_) {} } };
   const hookChunkArray = (arr) => {
     if (!arr || arr.__ct_push) return;
-    let realPush = arr.push;
+    arr.__ct_push = true;
+    // Wrap only the callback webpack ASSIGNS to push. The getter must return a stable
+    // reference (never a fresh closure), or webpack's saved old-push forms a call cycle.
+    const wrapCb = (fn) => {
+      if (typeof fn !== 'function' || fn.__ct_cb) return fn;
+      const w = function (...items) {
+        for (const item of items) { try { wrapFactories(item && item[1]); } catch (_) {} }
+        return fn.apply(this, items);
+      };
+      w.__ct_cb = true;
+      return w;
+    };
+    let current = arr.push; // native push now; webpack hasn't replaced it yet
     try {
       Object.defineProperty(arr, 'push', {
         configurable: true,
-        get() {
-          return function (...items) {
-            for (const item of items) { try { wrapFactories(item && item[1]); } catch (_) {} }
-            return realPush.apply(arr, items);
-          };
-        },
-        set(fn) { realPush = fn; }, // webpack installs its own callback here
+        enumerable: false,
+        get: () => current,
+        set: (fn) => { current = wrapCb(fn); scanQueue(arr); }, // webpack installs its callback here
       });
-      arr.__ct_push = true;
-      for (const item of arr) { try { wrapFactories(item && item[1]); } catch (_) {} } // already-queued chunks
     } catch (_) {}
+    scanQueue(arr); // chunks already queued before we hooked
   };
   // webpack 1 uses a function; 2/3 an array named `webpackJsonp`.
   const trapWebpackJsonp = () => {
