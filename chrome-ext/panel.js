@@ -93,7 +93,9 @@ function onEvent(source, method, params) {
   if (method === 'Target.attachedToTarget') {
     const sessionId = params.sessionId;
     childSessions.add(sessionId);
-    const child = { sessionId };
+    // chrome.debugger (unlike raw CDP) needs the tabId on every debuggee, even a child
+    // session — sessionId rides alongside it, not on its own.
+    const child = { tabId, sessionId };
     (async () => {
       try {
         await installInto(child);
