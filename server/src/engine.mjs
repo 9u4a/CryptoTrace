@@ -2,7 +2,7 @@
 import { loadProfile, inScope, selftest } from './profile.mjs';
 import { transform, PLAIN_MARKER } from './message.mjs';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 
 export function createEngine() {
   let profiles = [];
