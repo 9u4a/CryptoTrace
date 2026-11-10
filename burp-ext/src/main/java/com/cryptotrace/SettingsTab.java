@@ -32,6 +32,7 @@ import java.util.List;
 public final class SettingsTab {
     private final Settings settings;
     private final ServerClient server;
+    private final SessionKeys sessionKeys;
     private final JPanel root = new JPanel(new BorderLayout(8, 8));
     private final JTextField launcher = new JTextField(30);
     private final JTextField script = new JTextField(40);
@@ -40,9 +41,10 @@ public final class SettingsTab {
     private final JTextArea log = new JTextArea(14, 80);
     private final JCheckBox decryptResponses = new JCheckBox("Decrypt responses of requests CryptoTrace encrypted (Repeater/Intruder/Scanner; never Proxy)");
 
-    public SettingsTab(Settings settings, ServerClient server) {
+    public SettingsTab(Settings settings, ServerClient server, SessionKeys sessionKeys) {
         this.settings = settings;
         this.server = server;
+        this.sessionKeys = sessionKeys;
         build();
     }
 
@@ -141,6 +143,8 @@ public final class SettingsTab {
             JsonObject health = server.call("health", null);
             append("server " + health.get("version").getAsString() + " started");
             JsonObject loaded = server.load(files);
+            sessionKeys.setRules(loaded);
+            if (!sessionKeys.isEmpty()) append("watching responses for " + sessionKeys.size() + " session key(s)");
             int bad = 0;
             for (JsonElement r : loaded.getAsJsonArray("results")) {
                 JsonObject o = r.getAsJsonObject();

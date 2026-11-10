@@ -16,13 +16,14 @@ public final class CryptoTraceExtension implements BurpExtension {
             if (tab[0] != null) tab[0].append(line);
         }, 5000);
         Crypto crypto = new Crypto(server);
-        tab[0] = new SettingsTab(settings, server);
+        SessionKeys sessionKeys = new SessionKeys();
+        tab[0] = new SettingsTab(settings, server, sessionKeys);
 
         api.userInterface().registerSuiteTab("CryptoTrace", tab[0].component());
         api.userInterface().registerHttpRequestEditorProvider(PlainEditors.requests(api, crypto));
         api.userInterface().registerHttpResponseEditorProvider(PlainEditors.responses(api, crypto));
         api.userInterface().registerContextMenuItemsProvider(new PlainContextMenu(api, crypto));
-        api.http().registerHttpHandler(new CryptoHttpHandler(api, crypto, settings));
+        api.http().registerHttpHandler(new CryptoHttpHandler(api, crypto, settings, server, sessionKeys));
         api.scanner().registerInsertionPointProvider(new PlainInsertionPoints(api, crypto));
         api.extension().registerUnloadingHandler(server::close);
 

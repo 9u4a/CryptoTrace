@@ -28,13 +28,21 @@ export function createEngine() {
         try {
           const p = loadProfile(file);
           loaded.push(p);
-          return { file, profile: p.name, selftest: selftest(p) };
+          return { file, profile: p.name, selftest: selftest(p), captures: p.captures };
         } catch (e) {
           return { file, error: e.message };
         }
       });
       profiles = loaded;
       return { results };
+    },
+
+    // Runtime session-key capture: Burp extracts a value from a matching response and
+    // sends it here; dependent ciphers are rebuilt so later requests use the fresh key.
+    key({ profile, keyName, value, encoding }) {
+      const p = byName(profile);
+      if (typeof p.setKey !== 'function') throw new Error(`profile "${profile}" has no session keys`);
+      return p.setKey(keyName, value, encoding);
     },
 
     decryptRequest({ host, port, request }) {

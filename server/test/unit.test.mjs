@@ -130,3 +130,43 @@ test('out-of-scope request is untouched; header/query rules', () => {
   assert.equal(other.matched, null);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('session key: pending until captured, then decrypts; op "key" sets it', () => {
+  const sessKeyHex = '11'.repeat(32); // captured at runtime, not in the config
+  const ivHex = '22'.repeat(16);
+  const plain = '{"user":"alice"}';
+  const ref = crypto.createCipheriv('aes-256-cbc', Buffer.from(sessKeyHex, 'hex'), Buffer.from(ivHex, 'hex'));
+  const ct = Buffer.concat([ref.update(plain, 'utf8'), ref.final()]).toString('base64');
+
+  const cfg = {
+    schemaVersion: 1, profile: 'sess',
+    scope: [{ host: 'api.test', pathRegex: '.*' }],
+    keys: { sk: { source: 'session', encoding: 'hex', capture: { urlRegex: '/auth/handshake', jsonPath: '$.key' } } },
+    ciphers: { c1: { alg: 'aes-256-cbc', key: 'sk', iv: { value: ivHex, encoding: 'hex' }, padding: 'pkcs7' } },
+    apply: { request: [{ in: 'json', path: '$.data', cipher: 'c1' }], response: [] },
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-sess-'));
+  const file = path.join(dir, 'c.json');
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const eng = createEngine();
+  const loaded = eng.handle({ op: 'load', files: [file] }).results[0];
+
+  // Capture rule is surfaced to Burp, and the cipher is pending before capture.
+  assert.equal(loaded.error, undefined, loaded.error);
+  assert.deepEqual(loaded.captures, [{ keyName: 'sk', urlRegex: '/auth/handshake', jsonPath: '$.key', regex: null, header: null, encoding: 'hex' }]);
+
+  const body = JSON.stringify({ data: ct });
+  const before = eng.handle({ op: 'decryptRequest', host: 'api.test', port: 443, request: { headers: [], body, path: '/x' } });
+  assert.equal(before.applied[0].ok, false);
+  assert.match(before.applied[0].error, /not captured yet/);
+
+  // Burp captured the key from the handshake response and pushes it in.
+  eng.handle({ op: 'key', profile: 'sess', keyName: 'sk', value: sessKeyHex });
+  const after = eng.handle({ op: 'decryptRequest', host: 'api.test', port: 443, request: { headers: [], body, path: '/x' } });
+  assert.equal(after.applied[0].ok, true, JSON.stringify(after.applied));
+  assert.equal(JSON.parse(after.request.body).data.user, 'alice');
+
+  // A non-session key cannot be set this way.
+  assert.throws(() => eng.handle({ op: 'key', profile: 'sess', keyName: 'nope', value: 'x' }), /not a session key/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

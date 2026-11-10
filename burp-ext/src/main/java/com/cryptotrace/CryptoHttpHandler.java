@@ -10,7 +10,9 @@ import burp.api.montoya.http.handler.RequestToBeSentAction;
 import burp.api.montoya.http.handler.ResponseReceivedAction;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import com.google.gson.JsonObject;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -27,12 +29,16 @@ public final class CryptoHttpHandler implements HttpHandler {
     private final MontoyaApi api;
     private final Crypto crypto;
     private final Settings settings;
+    private final ServerClient server;
+    private final SessionKeys sessionKeys;
     private final Map<Integer, HttpRequest> encryptedPlain = new ConcurrentHashMap<>();
 
-    public CryptoHttpHandler(MontoyaApi api, Crypto crypto, Settings settings) {
+    public CryptoHttpHandler(MontoyaApi api, Crypto crypto, Settings settings, ServerClient server, SessionKeys sessionKeys) {
         this.api = api;
         this.crypto = crypto;
         this.settings = settings;
+        this.server = server;
+        this.sessionKeys = sessionKeys;
     }
 
     @Override
@@ -56,6 +62,7 @@ public final class CryptoHttpHandler implements HttpHandler {
 
     @Override
     public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived res) {
+        captureSessionKeys(res); // runs for every tool, Proxy included (the handshake is in the browser)
         HttpRequest plain = encryptedPlain.remove(res.messageId());
         if (plain == null || !settings.decryptResponses() || res.toolSource().isFromTool(ToolType.PROXY)) {
             return ResponseReceivedAction.continueWith(res);
@@ -67,6 +74,30 @@ public final class CryptoHttpHandler implements HttpHandler {
         } catch (ServerClient.ServerException e) {
             api.logging().logToError("CryptoTrace response decrypt failed: " + e.getMessage());
             return ResponseReceivedAction.continueWith(res);
+        }
+    }
+
+    /** Extract any configured session keys from this response and push them to the server. */
+    private void captureSessionKeys(HttpResponseReceived res) {
+        if (sessionKeys.isEmpty()) return;
+        String url = res.initiatingRequest() != null ? res.initiatingRequest().url() : null;
+        List<SessionKeys.Capture> found;
+        try {
+            found = sessionKeys.extract(url, res.bodyToString(), res::headerValue);
+        } catch (RuntimeException e) {
+            return; // never let capture disturb the response pipeline
+        }
+        for (SessionKeys.Capture c : found) {
+            try {
+                JsonObject args = new JsonObject();
+                args.addProperty("profile", c.profile());
+                args.addProperty("keyName", c.keyName());
+                args.addProperty("value", c.value());
+                server.call("key", args);
+                api.logging().logToOutput("CryptoTrace captured session key " + c.profile() + "." + c.keyName());
+            } catch (ServerClient.ServerException e) {
+                api.logging().logToError("CryptoTrace session-key update failed: " + e.getMessage());
+            }
         }
     }
 }

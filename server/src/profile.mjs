@@ -13,30 +13,70 @@ function fail(file, msg) {
   throw new Error(`${path.basename(file)}: ${msg}`);
 }
 
-function resolveKeys(file, keys = {}) {
-  const out = {};
-  for (const [name, k] of Object.entries(keys)) {
-    if (k.source === 'session') continue; // filled at runtime (phase 2)
+// Static keys resolve to bytes now; session keys stay empty until captured at runtime
+// (op "key") and carry a capture rule so Burp knows which response holds the value.
+function resolveKeys(file, keySpecs = {}) {
+  const store = {}; // name -> Buffer (session keys appear here only once captured)
+  const captures = [];
+  for (const [name, k] of Object.entries(keySpecs)) {
+    if (k.source === 'session') {
+      const cap = k.capture || {};
+      captures.push({
+        keyName: name,
+        urlRegex: cap.urlRegex || null,
+        jsonPath: cap.jsonPath || null,
+        regex: cap.regex || null,
+        header: cap.header || null,
+        encoding: k.encoding || 'utf8',
+      });
+      continue;
+    }
     if (k.source && k.source !== 'static') fail(file, `key "${name}": unknown source "${k.source}"`);
     if (typeof k.value !== 'string') fail(file, `key "${name}": missing value`);
-    out[name] = toBytes(k.value, k.encoding || 'utf8');
+    store[name] = toBytes(k.value, k.encoding || 'utf8');
   }
-  return out;
+  return { store, captures };
 }
 
-function buildCipher(file, name, spec, keys) {
-  if (spec.custom) {
-    const modPath = path.resolve(path.dirname(file), spec.custom);
-    return loadCustomCipher(modPath, spec, keys);
-  }
-  if (!spec.alg) fail(file, `cipher "${name}": needs "alg" or "custom"`);
+// A cipher whose session key hasn't arrived yet: valid to load and reference, but any
+// transform through it reports a clear "not captured yet" error instead of crashing.
+function pendingCipher(name, pendingKeys, keySpecs) {
+  const waits = pendingKeys
+    .map((k) => {
+      const cap = (keySpecs[k] && keySpecs[k].capture) || {};
+      return cap.urlRegex ? `${k} (from response ${cap.urlRegex})` : k;
+    })
+    .join(', ');
+  const err = () => {
+    throw new Error(`session key not captured yet: ${waits}`);
+  };
+  return { deterministic: false, pending: true, encrypt: err, decrypt: err };
+}
+
+function buildCipher(file, name, spec, store, keySpecs) {
+  const pendingKeys = [];
   const keyOf = (ref) => {
     if (!ref) return null;
-    if (!(ref in keys)) fail(file, `cipher "${name}": unknown key "${ref}"`);
-    return keys[ref];
+    if (ref in store) return store[ref];
+    if (keySpecs[ref] && keySpecs[ref].source === 'session') {
+      pendingKeys.push(ref);
+      return null;
+    }
+    fail(file, `cipher "${name}": unknown key "${ref}"`);
   };
-  if (spec.alg.toLowerCase() === 'rsa') return rsaCipher(spec, keyOf(spec.publicKey), keyOf(spec.privateKey));
+  if (spec.custom) {
+    const modPath = path.resolve(path.dirname(file), spec.custom);
+    return loadCustomCipher(modPath, spec, store);
+  }
+  if (!spec.alg) fail(file, `cipher "${name}": needs "alg" or "custom"`);
+  if (spec.alg.toLowerCase() === 'rsa') {
+    const pub = keyOf(spec.publicKey);
+    const priv = keyOf(spec.privateKey);
+    if (pendingKeys.length) return pendingCipher(name, pendingKeys, keySpecs);
+    return rsaCipher(spec, pub, priv);
+  }
   const key = keyOf(spec.key);
+  if (pendingKeys.length) return pendingCipher(name, pendingKeys, keySpecs);
   if (!key) fail(file, `cipher "${name}": needs "key"`);
   if (spec.kdf === 'openssl-md5') return opensslPassphraseCipher(spec, key); // CryptoJS passphrase mode
   if (spec.kdf) fail(file, `cipher "${name}": unknown kdf "${spec.kdf}"`);
@@ -63,29 +103,57 @@ export function loadProfile(file) {
     fail(file, `schemaVersion ${cfg.schemaVersion} not supported (server expects ${SCHEMA_VERSION})`);
   }
   if (!cfg.profile) fail(file, 'missing "profile"');
-  const keys = resolveKeys(file, cfg.keys);
-  const ciphers = {};
-  for (const [name, spec] of Object.entries(cfg.ciphers || {})) {
-    try {
-      ciphers[name] = buildCipher(file, name, spec, keys);
-    } catch (e) {
-      fail(file, `cipher "${name}": ${e.message}`);
-    }
-  }
+
+  const keySpecs = cfg.keys || {};
+  const cipherSpecs = cfg.ciphers || {};
+  const { store, captures } = resolveKeys(file, keySpecs);
   const scope = (cfg.scope || []).map((s) => ({
     host: String(s.host || '').toLowerCase(),
     port: s.port ?? null,
     pathRe: new RegExp(s.pathRegex || '.*'),
   }));
-  return {
+
+  const profile = {
     name: cfg.profile,
     file,
     scope,
-    ciphers,
-    request: validateRules(file, cfg.apply?.request, ciphers),
-    response: validateRules(file, cfg.apply?.response, ciphers),
+    keyStore: store,
+    keySpecs,
+    captures,
+    ciphers: {},
+    request: [],
+    response: [],
     selftestVectors: cfg.selftest || [],
   };
+
+  // (Re)build every cipher from its spec against the current key store. Called once at
+  // load and again each time a session key is captured, so pending ciphers come alive.
+  const rebuild = () => {
+    const ciphers = {};
+    for (const [name, spec] of Object.entries(cipherSpecs)) {
+      try {
+        ciphers[name] = buildCipher(file, name, spec, store, keySpecs);
+      } catch (e) {
+        fail(file, `cipher "${name}": ${e.message}`);
+      }
+    }
+    profile.ciphers = ciphers;
+  };
+  rebuild();
+
+  profile.request = validateRules(file, cfg.apply?.request, profile.ciphers);
+  profile.response = validateRules(file, cfg.apply?.response, profile.ciphers);
+
+  // Runtime key capture: store the bytes and rebuild so dependent ciphers become usable.
+  profile.setKey = (keyName, value, encoding) => {
+    const spec = keySpecs[keyName];
+    if (!spec || spec.source !== 'session') throw new Error(`"${keyName}" is not a session key`);
+    store[keyName] = toBytes(value, encoding || spec.encoding || 'utf8');
+    rebuild();
+    return { keyName, pending: Object.values(profile.ciphers).some((c) => c.pending) };
+  };
+
+  return profile;
 }
 
 export function inScope(profile, host, port, pathname) {
@@ -98,6 +166,7 @@ export function selftest(profile) {
   return profile.selftestVectors.map((v) => {
     const c = profile.ciphers[v.cipher];
     if (!c) return { cipher: v.cipher, ok: false, error: 'unknown cipher' };
+    if (c.pending) return { cipher: v.cipher, ok: false, error: 'session key not captured yet' };
     try {
       if (c.decrypt(v.ciphertext) !== v.plain) return { cipher: v.cipher, ok: false, error: 'decrypt(ciphertext) != plain' };
       if (c.deterministic && c.encrypt(v.plain) !== v.ciphertext.trim()) {
