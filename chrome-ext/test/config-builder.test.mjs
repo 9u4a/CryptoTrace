@@ -216,6 +216,20 @@ test('CryptoJS block mode and stream ciphers map correctly (not forced to CBC)',
   assert.equal(c.alg, 'aes-128-ecb');
 });
 
+test('correlated response location -> apply.response rule (deduped per location)', () => {
+  const buildConfig = loadBuilder();
+  const dec = (ct) => ({ lib: 'cryptojs', op: 'decrypt', alg: { name: 'AES' },
+    key: { encoding: 'cryptojs', value: '00112233445566778899aabbccddeeff' }, // leakcheck:allow
+    iv: { encoding: 'cryptojs', value: '0102030405060708090a0b0c0d0e0f10' }, // leakcheck:allow
+    input: { encoding: 'cryptojs', value: ct }, output: { encoding: 'utf8', value: '{"ok":1}' },
+    applyResponse: { in: 'json', path: '$.data' }, frame: 'http://127.0.0.1:8088/' });
+  const cfg = buildConfig([dec('CT1'), dec('CT2')]); // same response field captured twice
+  assert.equal(cfg.apply.response.length, 1);
+  assert.equal(cfg.apply.response[0].path, '$.data');
+  assert.equal(cfg.apply.request.length, 0);
+  assert.ok(cfg.ciphers[cfg.apply.response[0].cipher], 'response cipher exists');
+});
+
 function write(cfg) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-cb-'));
   const file = path.join(dir, 'config.json');

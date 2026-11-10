@@ -64,7 +64,12 @@
         send({ lib: 'transport', op: 'fetch', url, method, query: queryOf(url),
           headers: parseHeaders(init && init.headers), body: describeBody(body) });
       } catch (_) { /* never break the page's fetch */ }
-      return orig.apply(this, arguments);
+      const p = orig.apply(this, arguments);
+      try {
+        const url = typeof input === 'string' ? input : input && input.url;
+        p.then((res) => { try { res.clone().text().then((text) => send({ lib: 'transport', op: 'response', url, body: describeBody(text) })).catch(() => {}); } catch (_) {} }, () => {});
+      } catch (_) { /* observation only; never alter the page's promise */ }
+      return p;
     };
   }
 
@@ -87,6 +92,12 @@
         const c = this.__ct || {};
         send({ lib: 'transport', op: 'xhr', url: c.url, method: c.method, query: queryOf(c.url),
           headers: c.headers || [], body: describeBody(typeof body === 'string' ? body : null) });
+        this.addEventListener('load', function () {
+          try {
+            const text = this.responseType === '' || this.responseType === 'text' ? this.responseText : null;
+            if (text) send({ lib: 'transport', op: 'response', url: c.url, body: describeBody(text) });
+          } catch (_) { /* responseText not accessible for this responseType */ }
+        });
       } catch (_) { /* skip */ }
       return send_.apply(this, arguments);
     };

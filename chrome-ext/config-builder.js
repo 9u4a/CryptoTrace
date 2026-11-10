@@ -98,7 +98,9 @@
     // Emitting a rule per capture makes the server stack encryption layers on re-encrypt
     // (each adds ~1.33x via base64 -> NN-fold body blow-up and a broken request). The
     // first capture at a location defines the cipher; later ones only add selftest vectors.
-    const ruleByLoc = new Map(); // "in|path|name" -> cipher id
+    const ruleByLoc = new Map(); // request "in|path|name" -> cipher id
+    const ruleByLocResp = new Map(); // response "in|path|name" -> cipher id
+    const locKeyOf = (a) => (a ? `${a.in}|${a.path || ''}|${a.name || ''}` : null);
     const keyNameFor = (entry) => {
       const sig = JSON.stringify(entry);
       for (const [n, e] of Object.entries(cfg.keys)) if (JSON.stringify(e) === sig) return n;
@@ -117,11 +119,15 @@
       else if (r.lib === 'jsencrypt') spec = { alg: 'rsa', padding: 'pkcs1' };
       if (!spec) continue;
 
-      // Reuse the cipher already chosen for this apply location instead of stacking a new one.
-      const locKey = r.apply ? `${r.apply.in}|${r.apply.path || ''}|${r.apply.name || ''}` : null;
+      // Reuse the cipher already chosen for this apply location (request or response) instead of
+      // stacking a new one per capture. The first capture at a location defines the cipher.
+      const locKey = locKeyOf(r.apply);
+      const locKeyResp = locKeyOf(r.applyResponse);
       let id;
       if (locKey && ruleByLoc.has(locKey)) {
-        id = ruleByLoc.get(locKey); // same field seen again this session -> selftest vector only
+        id = ruleByLoc.get(locKey);
+      } else if (locKeyResp && ruleByLocResp.has(locKeyResp)) {
+        id = ruleByLocResp.get(locKeyResp);
       } else {
         id = 'c' + ++ci;
         if (spec.alg === 'rsa') {
@@ -138,12 +144,10 @@
           if (!passphrase && r.iv && r.iv.value && !spec.iv) spec.iv = { value: r.iv.value, encoding: r.iv.encoding === 'base64' ? 'base64' : 'hex' };
           cfg.ciphers[id] = spec;
         }
-        // apply rule from correlated transport location (request side)
-        if (locKey) {
-          cfg.apply.request.push({ ...r.apply, cipher: id });
-          ruleByLoc.set(locKey, id);
-        }
       }
+      // apply rules from correlated transport locations (request and/or response side)
+      if (locKey && !ruleByLoc.has(locKey)) { cfg.apply.request.push({ ...r.apply, cipher: id }); ruleByLoc.set(locKey, id); }
+      if (locKeyResp && !ruleByLocResp.has(locKeyResp)) { cfg.apply.response.push({ ...r.applyResponse, cipher: id }); ruleByLocResp.set(locKeyResp, id); }
       // selftest vector when we have both plaintext and ciphertext
       if (r.op === 'encrypt' && r.input && r.output && r.input.encoding === 'utf8') {
         cfg.selftest.push({ cipher: id, plain: r.input.value, ciphertext: r.output.value });

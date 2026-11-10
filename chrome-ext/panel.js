@@ -142,39 +142,40 @@ function addRecord(rec) {
   el('count').textContent = records.filter((r) => r.lib !== 'transport').length + ' calls';
 }
 
-// Match a transport record's fields against recent cipher outputs to find where ciphertext is placed.
-function correlate(t) {
-  const recentOutputs = records
-    .filter((r) => r.output && r.output.value && r.lib !== 'transport')
-    .slice(-80);
-  // Match the ciphertext even when the request re-encodes it: URL-encoded in a query/body field,
-  // or carried with base64 padding stripped. JSON field values arrive already unescaped.
-  const urldec = (s) => { try { return decodeURIComponent(String(s).replace(/\+/g, ' ')); } catch (_) { return String(s); } };
-  const match = (value, out) => {
-    if (!value || !out) return false;
-    const hay = [String(value), urldec(value)];
-    const needles = [out, out.replace(/=+$/, '')];
-    return hay.some((h) => needles.some((n) => n && h.includes(n)));
-  };
-  const find = (value) => recentOutputs.find((r) => match(value, r.output.value));
+// Match a ciphertext even when the field re-encodes it: URL-encoded, or base64 padding stripped.
+// JSON field values arrive already unescaped.
+const _urldec = (s) => { try { return decodeURIComponent(String(s).replace(/\+/g, ' ')); } catch (_) { return String(s); } };
+function cipherMatch(value, target) {
+  if (!value || !target) return false;
+  const hay = [String(value), _urldec(value)];
+  const needles = [target, target.replace(/=+$/, '')];
+  return hay.some((h) => needles.some((n) => n && h.includes(n)));
+}
 
+// A request transport record: find where recent cipher OUTPUTS (ciphertext) are placed -> apply.request.
+// A response transport record: find where recent DECRYPT INPUTS (ciphertext) sit -> apply.response.
+function correlate(t) {
+  if (t.op === 'response') return correlateResponse(t);
+  const outs = records.filter((r) => r.output && r.output.value && r.lib !== 'transport').slice(-80);
+  const find = (value) => outs.find((r) => cipherMatch(value, r.output.value));
   const b = t.body || {};
   if (b.kind === 'json' && Array.isArray(b.fields)) {
-    for (const f of b.fields) {
-      const hit = find(f.value);
-      if (hit) hit.apply = { in: 'json', path: f.path };
-    }
+    for (const f of b.fields) { const hit = find(f.value); if (hit) hit.apply = { in: 'json', path: f.path }; }
   } else if (b.kind === 'text' && b.sample) {
-    const hit = find(b.sample);
-    if (hit) hit.apply = { in: 'body' };
+    const hit = find(b.sample); if (hit) hit.apply = { in: 'body' };
   }
-  for (const [name, value] of t.headers || []) {
-    const hit = find(value);
-    if (hit) hit.apply = { in: 'header', name };
-  }
-  for (const [name, value] of t.query || []) {
-    const hit = find(value);
-    if (hit) hit.apply = { in: 'query', name };
+  for (const [name, value] of t.headers || []) { const hit = find(value); if (hit) hit.apply = { in: 'header', name }; }
+  for (const [name, value] of t.query || []) { const hit = find(value); if (hit) hit.apply = { in: 'query', name }; }
+}
+
+function correlateResponse(t) {
+  const decs = records.filter((r) => r.op === 'decrypt' && r.input && r.input.value).slice(-80);
+  const find = (value) => decs.find((r) => cipherMatch(value, r.input.value));
+  const b = t.body || {};
+  if (b.kind === 'json' && Array.isArray(b.fields)) {
+    for (const f of b.fields) { const hit = find(f.value); if (hit) hit.applyResponse = { in: 'json', path: f.path }; }
+  } else if (b.kind === 'text' && b.sample) {
+    const hit = find(b.sample); if (hit) hit.applyResponse = { in: 'body' };
   }
 }
 
