@@ -31,6 +31,13 @@ function querySet(qs, name, value) {
     .join('&');
 }
 
+// Update the field if present, else append it (used when an integrity target field is new).
+function querySetOrAdd(qs, name, value) {
+  if (queryGet(qs, name) !== undefined) return querySet(qs, name, value);
+  const pair = `${encodeURIComponent(name)}=${encodeURIComponent(value)}`;
+  return qs ? `${qs}&${pair}` : pair;
+}
+
 // Plaintext that is itself JSON is shown as a nested object so it can be edited in place,
 // and serialized back (compact) before encryption.
 const embed = (plain) => {
@@ -112,8 +119,8 @@ export function transform(profile, rules, msg, direction, integrity = []) {
       try {
         const value = computeRule(r, { read, keyStore: profile.keyStore || {}, state, loadCustom });
         if (t.in === 'header') { const i = findHeader(headers, t.name); if (i < 0) headers.push([t.name, value]); else headers[i][1] = value; }
-        else if (t.in === 'query') qs = queryGet(qs, t.name) === undefined ? (qs ? `${qs}&${encodeURIComponent(t.name)}=${encodeURIComponent(value)}` : `${encodeURIComponent(t.name)}=${encodeURIComponent(value)}`) : querySet(qs, t.name, value);
-        else if (t.in === 'form') body = queryGet(body, t.name) === undefined ? (body ? `${body}&${encodeURIComponent(t.name)}=${encodeURIComponent(value)}` : `${encodeURIComponent(t.name)}=${encodeURIComponent(value)}`) : querySet(body, t.name, value);
+        else if (t.in === 'query') qs = querySetOrAdd(qs, t.name, value);
+        else if (t.in === 'form') body = querySetOrAdd(body, t.name, value);
         else if (t.in === 'body') body = value;
         else if (t.in === 'json') { const j = JSON.parse(body); setAt(j, t.parts, value); body = JSON.stringify(j); }
         applied.push({ in: t.in, where, integrity: r.type, ok: true });

@@ -8,6 +8,7 @@ import readline from 'node:readline';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { VERSION } from '../src/engine.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
@@ -31,7 +32,7 @@ after(() => { rl?.close(); proc?.kill(); });
 test('bundled server answers health and loads a profile with passing selftest', async () => {
   const h = await call('health');
   assert.equal(h.ok, true);
-  assert.equal(h.version, '0.1.0');
+  assert.equal(h.version, VERSION);
 
   const l = await call('load', { files: [SCENARIO_A] });
   const r = l.results[0];

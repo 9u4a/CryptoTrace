@@ -170,8 +170,6 @@
       });
     }
   };
-  trapGlobal('CryptoJS', installCryptoJS);
-
   // sjcl: high-level sjcl.encrypt(password, plaintext) / sjcl.decrypt(password, ciphertext).
   const installSjcl = (S) => {
     if (!S || S.__ct_wrapped || typeof S.encrypt !== 'function' || typeof S.decrypt !== 'function') return;
@@ -189,7 +187,6 @@
       return out;
     });
   };
-  trapGlobal('sjcl', installSjcl);
 
   // node-forge: forge.cipher.createCipher/createDecipher(algorithm, key) -> streaming cipher.
   // Wrap the returned object's start/update/finish to capture iv, accumulated input and output.
@@ -219,22 +216,26 @@
     wrapFactory('createCipher', 'encrypt');
     wrapFactory('createDecipher', 'decrypt');
   };
-  trapGlobal('forge', installForge);
+
+  // Object-exporting crypto libraries. To add one: write an installer above and append
+  // { name, detect, install } here — it is then hooked both as a global and inside webpack bundles.
+  const isCryptoJS = (x) => x && x.AES && typeof x.AES.encrypt === 'function' && x.enc && x.lib;
+  const isSjcl = (x) => x && typeof x.encrypt === 'function' && typeof x.decrypt === 'function' && x.cipher && x.codec;
+  const isForge = (x) => x && x.cipher && typeof x.cipher.createCipher === 'function' && x.util && x.md;
+  const LIBS = [
+    { name: 'CryptoJS', detect: isCryptoJS, install: installCryptoJS },
+    { name: 'sjcl', detect: isSjcl, install: installSjcl },
+    { name: 'forge', detect: isForge, install: installForge },
+  ];
+  for (const l of LIBS) trapGlobal(l.name, l.install);
 
   // ---- bundled libraries (webpack) ---------------------------------------
   // Real apps bundle crypto-js inside webpack modules, off `window`. Intercept the
   // chunk loader, wrap each module factory, and when its exports look like a known
   // library, hook it with the same installer used for the global.
-  const isCryptoJS = (x) => x && x.AES && typeof x.AES.encrypt === 'function' && x.enc && x.lib;
-  const isSjcl = (x) => x && typeof x.encrypt === 'function' && typeof x.decrypt === 'function' && x.cipher && x.codec;
-  const isForge = (x) => x && x.cipher && typeof x.cipher.createCipher === 'function' && x.util && x.md;
   const scanExports = (exp) => {
     if (!exp || typeof exp !== 'object') return;
-    for (const cand of [exp, exp.default]) {
-      if (isCryptoJS(cand)) installCryptoJS(cand);
-      if (isSjcl(cand)) installSjcl(cand);
-      if (isForge(cand)) installForge(cand);
-    }
+    for (const cand of [exp, exp.default]) for (const l of LIBS) if (l.detect(cand)) l.install(cand);
   };
   const wrapFactories = (modules) => {
     if (!modules || typeof modules !== 'object') return;
