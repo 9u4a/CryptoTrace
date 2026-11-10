@@ -171,6 +171,30 @@ test('repeated captures of one field -> a single apply rule (no stacked re-encry
   assert.ok(res.selftest.every((t) => t.ok), JSON.stringify(res.selftest));
 });
 
+test('captured hash/HMAC with a correlated location -> draft integrity rules', () => {
+  const buildConfig = loadBuilder();
+  const records = [
+    // a hash token that landed in $.token
+    { lib: 'cryptojs', op: 'hash', alg: { name: 'SHA256' }, input: { encoding: 'utf8', value: 'whatever' },
+      output: { encoding: 'hex', value: 'deadbeef' }, apply: { in: 'json', path: '$.token' }, frame: 'http://127.0.0.1:8088/' },
+    // an HMAC signature in the X-Sign header, with a captured key
+    { lib: 'cryptojs', op: 'hmac', alg: { name: 'SHA256' }, key: { encoding: 'cryptojs', value: '00112233445566778899aabbccddeeff' }, // leakcheck:allow
+      input: { encoding: 'utf8', value: 'body+ts' }, output: { encoding: 'hex', value: 'abcd' },
+      apply: { in: 'header', name: 'X-Sign' }, frame: 'http://127.0.0.1:8088/' },
+  ];
+  const cfg = buildConfig(records);
+  assert.equal(cfg.integrity.length, 2);
+  const hash = cfg.integrity.find((r) => r.type === 'hash');
+  assert.equal(hash.alg, 'sha256');
+  assert.equal(JSON.stringify(hash.target), JSON.stringify({ in: 'json', path: '$.token' }));
+  const hmac = cfg.integrity.find((r) => r.type === 'hmac');
+  assert.equal(JSON.stringify(hmac.target), JSON.stringify({ in: 'header', name: 'X-Sign' }));
+  assert.ok(hmac.key && cfg.keys[hmac.key], 'hmac key stored');
+  // The draft loads into the real engine without error.
+  const res = loadIntoEngine(cfg);
+  assert.equal(res.error, undefined, res.error);
+});
+
 function write(cfg) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-cb-'));
   const file = path.join(dir, 'config.json');

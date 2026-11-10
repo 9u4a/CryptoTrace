@@ -69,6 +69,7 @@
       keys: {},
       ciphers: {},
       apply: { request: [], response: [] },
+      integrity: [],
       selftest: [],
       _notes: [
         'Draft produced by CryptoTrace capture. REVIEW before use:',
@@ -137,6 +138,25 @@
       } else if (r.op === 'decrypt' && r.input && r.output && r.output.encoding === 'utf8') {
         cfg.selftest.push({ cipher: id, plain: r.output.value, ciphertext: r.input.value });
       }
+    }
+
+    // Draft integrity rules from captured hash/HMAC calls whose output landed in a request field
+    // (a token/signature). The analyst must set the "input" template to match the page; the captured
+    // one-shot input is recorded in _note as a starting point.
+    const normAlg = (a) => String((a && a.name) || 'SHA256').toLowerCase().replace(/^sha-?/, 'sha');
+    for (const r of records) {
+      if ((r.op !== 'hash' && r.op !== 'hmac') || !r.apply) continue;
+      const target = r.apply.in === 'json' ? { in: 'json', path: r.apply.path }
+        : r.apply.in === 'header' ? { in: 'header', name: r.apply.name }
+        : r.apply.in === 'query' ? { in: 'query', name: r.apply.name } : { in: 'body' };
+      if (cfg.integrity.some((x) => JSON.stringify(x.target) === JSON.stringify(target))) continue;
+      const rule = { type: r.op === 'hmac' ? 'hmac' : 'hash', alg: normAlg(r.alg), input: '{body}', outEncoding: 'hex', target };
+      if (r.op === 'hmac' && r.key && r.key.value != null) {
+        const v = String(r.key.value);
+        rule.key = keyNameFor({ source: 'static', value: v, encoding: /^[0-9a-fA-F]+$/.test(v) && v.length % 2 === 0 ? 'hex' : 'utf8' });
+      }
+      rule._note = 'DRAFT: set "input" to the real template. Captured input was: ' + JSON.stringify(String((r.input && r.input.value) || '').slice(0, 120));
+      cfg.integrity.push(rule);
     }
 
     cfg.scope = [...hosts].filter(Boolean).map((s) => {

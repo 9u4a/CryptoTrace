@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { toBytes } from './encoding.mjs';
 import { symmetricCipher, rsaCipher, opensslPassphraseCipher } from './cipher.mjs';
-import { loadCustomCipher } from './custom.mjs';
+import { loadCustomCipher, loadCustomSign } from './custom.mjs';
 import { parsePath } from './jsonpath.mjs';
+import { INTEGRITY_TYPES } from './integrity.mjs';
 
 export const SCHEMA_VERSION = 1;
 const LOCATIONS = ['json', 'body', 'header', 'query'];
@@ -92,6 +93,25 @@ function validateRules(file, rules = [], ciphers) {
   });
 }
 
+// Integrity rules recompute a token/signature over the final message (see integrity.mjs).
+// `target` is where the computed value is written; custom signers are preloaded here.
+function validateIntegrity(file, rules = [], store, keySpecs) {
+  return rules.map((r, i) => {
+    if (!INTEGRITY_TYPES.has(r.type)) fail(file, `integrity #${i}: unknown type "${r.type}"`);
+    const t = r.target || {};
+    if (!LOCATIONS.includes(t.in)) fail(file, `integrity #${i}: target.in must be one of ${LOCATIONS.join('/')}`);
+    if ((t.in === 'header' || t.in === 'query') && !t.name) fail(file, `integrity #${i}: target needs "name"`);
+    if (t.in === 'json' && !t.path) fail(file, `integrity #${i}: target needs "path"`);
+    if (r.type === 'hmac' && !(r.key in keySpecs)) fail(file, `integrity #${i}: unknown key "${r.key}"`);
+    const out = { ...r, target: t.in === 'json' ? { ...t, parts: parsePath(t.path) } : { ...t } };
+    if (r.type === 'custom') {
+      if (!r.custom) fail(file, `integrity #${i}: custom needs "custom" module path`);
+      out.__sign = loadCustomSign(path.resolve(path.dirname(file), r.custom), r, store);
+    }
+    return out;
+  });
+}
+
 export function loadProfile(file) {
   let cfg;
   try {
@@ -143,6 +163,8 @@ export function loadProfile(file) {
 
   profile.request = validateRules(file, cfg.apply?.request, profile.ciphers);
   profile.response = validateRules(file, cfg.apply?.response, profile.ciphers);
+  profile.integrity = validateIntegrity(file, cfg.integrity, store, keySpecs);
+  profile.integrityResponse = validateIntegrity(file, cfg.integrityResponse, store, keySpecs);
 
   // Runtime key capture: store the bytes and rebuild so dependent ciphers become usable.
   profile.setKey = (keyName, value, encoding) => {

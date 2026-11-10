@@ -1,18 +1,20 @@
-// Custom cipher modules ported from the target's JS, run in node:vm.
+// Custom modules ported from the target's JS, run in node:vm.
 //
 // NOT A SECURITY BOUNDARY. node:vm only separates globals; hostile code can escape it.
 // Only load code you have read and reviewed. What this does give you: no require/process/fetch
 // in scope by default, and a per-call timeout so a runaway loop can't hang Burp.
 //
-// Module shape (CommonJS style):
+// Cipher module shape (CommonJS style):
 //   module.exports = { encrypt(plain, ctx) -> string, decrypt(cipher, ctx) -> string }
-// Both must be synchronous. ctx = { key: {<name>: Buffer}, params: <cipher spec> }.
+// Integrity signer shape:
+//   module.exports = { sign(ctx) -> string }   // ctx = { input, key: {<name>: Buffer}, params }
+// All must be synchronous. ctx.key = { <name>: Buffer }, ctx.params = the spec.
 import vm from 'node:vm';
 import fs from 'node:fs';
 
 const DEFAULT_TIMEOUT_MS = 1000;
 
-export function loadCustomCipher(file, spec, keys) {
+function loadModule(file, spec) {
   const source = fs.readFileSync(file, 'utf8');
   const sandbox = {
     module: { exports: {} },
@@ -28,7 +30,11 @@ export function loadCustomCipher(file, spec, keys) {
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
   const timeout = spec.timeoutMs || DEFAULT_TIMEOUT_MS;
   new vm.Script(source, { filename: file }).runInContext(context, { timeout });
+  return { context, timeout };
+}
 
+export function loadCustomCipher(file, spec, keys) {
+  const { context, timeout } = loadModule(file, spec);
   const mod = context.module.exports;
   for (const fn of ['encrypt', 'decrypt']) {
     if (typeof mod[fn] !== 'function') throw new Error(`${file}: module.exports.${fn} is not a function`);
@@ -44,5 +50,17 @@ export function loadCustomCipher(file, spec, keys) {
     deterministic: spec.deterministic !== false,
     encrypt: (plain) => call('encrypt', plain),
     decrypt: (text) => call('decrypt', text),
+  };
+}
+
+/** Load an integrity signer: module.exports.sign(ctx) -> string. Returns a callable (ctx) => string. */
+export function loadCustomSign(file, spec, keys) {
+  const { context, timeout } = loadModule(file, spec);
+  if (typeof context.module.exports.sign !== 'function') throw new Error(`${file}: module.exports.sign is not a function`);
+  return (ctx) => {
+    context.__ctx = { ...ctx, key: keys, params: spec };
+    const out = vm.runInContext('module.exports.sign(__ctx)', context, { timeout });
+    if (typeof out !== 'string') throw new Error(`${file}: sign() must return a string synchronously`);
+    return out;
   };
 }

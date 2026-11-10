@@ -57,7 +57,7 @@ export function createEngine() {
       const req = { ...request, headers };
       const p = pick(host, port, req.path);
       if (!p) return noMatch('request', req);
-      const { message, applied } = transform(p, p.request, req, 'encrypt');
+      const { message, applied } = transform(p, p.request, req, 'encrypt', p.integrity);
       return { matched: p.name, request: message, applied };
     },
 
@@ -71,7 +71,7 @@ export function createEngine() {
     encryptResponse({ host, port, path, response }) {
       const p = pick(host, port, path);
       if (!p) return noMatch('response', response);
-      const { message, applied } = transform(p, p.response, response, 'encrypt');
+      const { message, applied } = transform(p, p.response, response, 'encrypt', p.integrityResponse);
       return { matched: p.name, response: message, applied };
     },
 

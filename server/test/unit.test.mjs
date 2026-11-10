@@ -170,3 +170,81 @@ test('session key: pending until captured, then decrypts; op "key" sets it', () 
   assert.throws(() => eng.handle({ op: 'key', profile: 'sess', keyName: 'nope', value: 'x' }), /not a session key/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('integrity: timestamp + hmac over ciphertext recomputed on encrypt', () => {
+  const keyHex = 'aa'.repeat(32); // hmac key  (test-only)
+  const ivHex = '22'.repeat(16);
+  const cfg = {
+    schemaVersion: 1, profile: 'intg',
+    scope: [{ host: 'api.test', pathRegex: '.*' }],
+    keys: {
+      ek: { source: 'static', value: '33'.repeat(32), encoding: 'hex' },
+      hk: { source: 'static', value: keyHex, encoding: 'hex' },
+    },
+    ciphers: { c1: { alg: 'aes-256-cbc', key: 'ek', iv: { value: ivHex, encoding: 'hex' }, padding: 'pkcs7' } },
+    apply: { request: [{ in: 'json', path: '$.data', cipher: 'c1' }], response: [] },
+    integrity: [
+      { type: 'timestamp', format: 'ms', target: { in: 'header', name: 'X-Ts' } },
+      { type: 'hmac', alg: 'sha256', key: 'hk', input: '{json:$.data}{header:X-Ts}', outEncoding: 'hex', target: { in: 'header', name: 'X-Sign' } },
+    ],
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-intg-'));
+  const file = path.join(dir, 'c.json');
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const eng = createEngine();
+  assert.equal(eng.handle({ op: 'load', files: [file] }).results[0].error, undefined);
+
+  const body = JSON.stringify({ data: 'topsecret', other: 1 });
+  const res = eng.handle({ op: 'encryptRequest', host: 'api.test', port: 443, request: { headers: [], body, path: '/x' } });
+  assert.ok(res.applied.every((a) => a.ok), JSON.stringify(res.applied));
+
+  const ct = JSON.parse(res.request.body).data;
+  const ts = res.request.headers.find(([n]) => n === 'X-Ts')[1];
+  const sign = res.request.headers.find(([n]) => n === 'X-Sign')[1];
+  assert.match(ts, /^\d+$/);
+  const expected = crypto.createHmac('sha256', Buffer.from(keyHex, 'hex')).update(ct + ts, 'utf8').digest('hex');
+  assert.equal(sign, expected);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('integrity: custom sign module runs on encrypt', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-intgc-'));
+  fs.writeFileSync(path.join(dir, 'sign.js'),
+    'module.exports = { sign: (ctx) => "L" + ctx.input.length + ":" + Object.keys(ctx.key).join(",") };');
+  const cfg = {
+    schemaVersion: 1, profile: 'intgc',
+    scope: [{ host: 'api.test', pathRegex: '.*' }],
+    keys: { hk: { source: 'static', value: 'ab'.repeat(16), encoding: 'hex' } },
+    ciphers: {},
+    apply: { request: [], response: [] },
+    integrity: [{ type: 'custom', custom: 'sign.js', input: '{body}', target: { in: 'header', name: 'X-C' } }],
+  };
+  const file = path.join(dir, 'c.json');
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const eng = createEngine();
+  assert.equal(eng.handle({ op: 'load', files: [file] }).results[0].error, undefined);
+
+  const body = '{"a":1}';
+  const res = eng.handle({ op: 'encryptRequest', host: 'api.test', port: 443, request: { headers: [], body, path: '/x' } });
+  const xc = res.request.headers.find(([n]) => n === 'X-C')[1];
+  assert.equal(xc, 'L' + body.length + ':hk');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('integrity: failing rule makes the op not-ok (blocks in Burp)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-intgf-'));
+  fs.writeFileSync(path.join(dir, 'bad.js'), 'module.exports = { sign: () => { throw new Error("boom"); } };');
+  const cfg = {
+    schemaVersion: 1, profile: 'intgf',
+    scope: [{ host: 'api.test', pathRegex: '.*' }], keys: {}, ciphers: {},
+    apply: { request: [], response: [] },
+    integrity: [{ type: 'custom', custom: 'bad.js', target: { in: 'header', name: 'X-C' } }],
+  };
+  const file = path.join(dir, 'c.json');
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const eng = createEngine();
+  assert.equal(eng.handle({ op: 'load', files: [file] }).results[0].error, undefined);
+  const res = eng.handle({ op: 'encryptRequest', host: 'api.test', port: 443, request: { headers: [], body: '{}', path: '/x' } });
+  assert.ok(res.applied.some((a) => !a.ok), JSON.stringify(res.applied));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
