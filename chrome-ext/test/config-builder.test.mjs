@@ -195,6 +195,27 @@ test('captured hash/HMAC with a correlated location -> draft integrity rules', (
   assert.equal(res.error, undefined, res.error);
 });
 
+test('CryptoJS block mode and stream ciphers map correctly (not forced to CBC)', () => {
+  const buildConfig = loadBuilder();
+  const rec = (over) => ({ lib: 'cryptojs', op: 'encrypt', alg: { name: 'AES' },
+    key: { encoding: 'cryptojs', value: '00112233445566778899aabbccddeeff' }, // leakcheck:allow
+    input: { encoding: 'utf8', value: 'x' }, output: { encoding: 'cryptojs', value: 'ZZ' },
+    frame: 'http://127.0.0.1:8088/', ...over });
+
+  let cfg = buildConfig([rec({ mode: 'CTR' })]);
+  let c = cfg.ciphers[Object.keys(cfg.ciphers)[0]];
+  assert.equal(c.alg, 'aes-128-ctr');
+  assert.equal(c.padding, undefined); // CTR/GCM carry no block padding
+
+  cfg = buildConfig([rec({ alg: { name: 'RC4' } })]);
+  c = cfg.ciphers[Object.keys(cfg.ciphers)[0]];
+  assert.equal(c.alg, 'rc4');
+
+  cfg = buildConfig([rec({ mode: 'ECB' })]);
+  c = cfg.ciphers[Object.keys(cfg.ciphers)[0]];
+  assert.equal(c.alg, 'aes-128-ecb');
+});
+
 function write(cfg) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-cb-'));
   const file = path.join(dir, 'config.json');

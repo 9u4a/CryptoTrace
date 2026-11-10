@@ -30,7 +30,9 @@ function unpad(buf, padding) {
 export function symmetricCipher(spec, keyBytes) {
   const alg = spec.alg.toLowerCase();
   if (!OPENSSL.has(alg)) throw new Error(`cipher "${alg}" not available in this Node/OpenSSL build`);
-  const isGcm = alg.endsWith('-gcm');
+  // AEAD = authenticated: append a tag on encrypt, verify it on decrypt. GCM and ChaCha20-Poly1305
+  // share the same Node API (getAuthTag/setAuthTag, authTagLength, 12-byte nonce, no padding).
+  const isAead = alg.endsWith('-gcm') || alg === 'chacha20-poly1305';
   const isEcb = alg.endsWith('-ecb');
   const padding = spec.padding || 'pkcs7';
   if (!['pkcs7', 'none', 'zero'].includes(padding)) throw new Error(`unknown padding "${padding}"`);
@@ -38,21 +40,21 @@ export function symmetricCipher(spec, keyBytes) {
   const outEnc = spec.outEncoding || 'base64';
   const tagLen = spec.tag?.length ?? 16;
   const ivPrefix = spec.iv?.from === 'prefix';
-  const ivLen = ivPrefix ? spec.iv.length ?? (isGcm ? 12 : 16) : 0;
+  const ivLen = ivPrefix ? spec.iv.length ?? (isAead ? 12 : 16) : 0;
   const staticIv = !isEcb && !ivPrefix ? (spec.iv ? toBytes(spec.iv.value, spec.iv.encoding) : null) : null;
   if (!isEcb && !ivPrefix && !staticIv) throw new Error(`${alg} needs "iv"`);
   const aad = spec.aad ? toBytes(spec.aad.value, spec.aad.encoding) : null;
-  const usePadding = !isGcm && !alg.includes('-ctr') && padding === 'pkcs7';
+  const usePadding = !isAead && !alg.includes('-ctr') && padding === 'pkcs7';
 
   return {
     deterministic: !ivPrefix,
     encrypt(plain) {
       const iv = ivPrefix ? crypto.randomBytes(ivLen) : staticIv;
-      const c = crypto.createCipheriv(alg, keyBytes, isEcb ? null : iv, isGcm ? { authTagLength: tagLen } : undefined);
+      const c = crypto.createCipheriv(alg, keyBytes, isEcb ? null : iv, isAead ? { authTagLength: tagLen } : undefined);
       c.setAutoPadding(usePadding);
       if (aad) c.setAAD(aad);
-      const body = Buffer.concat([c.update(pad(toBytes(plain, inEnc), isGcm ? 'none' : padding)), c.final()]);
-      const parts = [ivPrefix ? iv : null, body, isGcm ? c.getAuthTag() : null].filter(Boolean);
+      const body = Buffer.concat([c.update(pad(toBytes(plain, inEnc), isAead ? 'none' : padding)), c.final()]);
+      const parts = [ivPrefix ? iv : null, body, isAead ? c.getAuthTag() : null].filter(Boolean);
       return fromBytes(Buffer.concat(parts), outEnc);
     },
     decrypt(text) {
@@ -62,15 +64,15 @@ export function symmetricCipher(spec, keyBytes) {
         iv = raw.subarray(0, ivLen);
         raw = raw.subarray(ivLen);
       }
-      const d = crypto.createDecipheriv(alg, keyBytes, isEcb ? null : iv, isGcm ? { authTagLength: tagLen } : undefined);
+      const d = crypto.createDecipheriv(alg, keyBytes, isEcb ? null : iv, isAead ? { authTagLength: tagLen } : undefined);
       d.setAutoPadding(usePadding);
       if (aad) d.setAAD(aad);
-      if (isGcm) {
+      if (isAead) {
         d.setAuthTag(raw.subarray(raw.length - tagLen));
         raw = raw.subarray(0, raw.length - tagLen);
       }
       const out = Buffer.concat([d.update(raw), d.final()]);
-      return fromBytes(unpad(out, isGcm ? 'none' : padding), inEnc);
+      return fromBytes(unpad(out, isAead ? 'none' : padding), inEnc);
     },
   };
 }
@@ -118,6 +120,23 @@ export function opensslPassphraseCipher(spec, passBytes) {
       return fromBytes(Buffer.concat([d.update(raw.subarray(16)), d.final()]), inEnc);
     },
   };
+}
+
+/**
+ * Sign bytes with a private key (for an integrity "sign" rule). Covers RSA (PSS or PKCS1),
+ * ECDSA, and EdDSA. `alg` is a hash name ('sha256') or null for Ed25519/Ed448.
+ * privKeyBytes: Buffer of PEM text or DER pkcs8. Returns a Buffer signature.
+ */
+export function signData(alg, privKeyBytes, data, { padding, saltLength } = {}) {
+  const key = asKeyObject(privKeyBytes, 'private');
+  const opts = { key };
+  if (padding === 'pss') {
+    opts.padding = crypto.constants.RSA_PKCS1_PSS_PADDING;
+    if (saltLength != null) opts.saltLength = saltLength;
+  } else if (padding === 'pkcs1') {
+    opts.padding = crypto.constants.RSA_PKCS1_PADDING;
+  }
+  return crypto.sign(alg || null, Buffer.from(data), opts);
 }
 
 function asKeyObject(bytesOrPem, kind) {

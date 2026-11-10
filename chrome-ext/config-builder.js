@@ -30,15 +30,27 @@
     // Passphrase mode: `AES.encrypt(plain, "string")` emits base64("Salted__"+salt+ct),
     // and key+IV come from OpenSSL EVP_BytesToKey — the server handles this via kdf.
     const out = String((rec.output && rec.output.value) || '');
+    const io = { inEncoding: 'utf8', outEncoding: 'base64' };
     if (/^U2FsdGVkX1/.test(out)) {
-      return { alg: 'aes-256-cbc', kdf: 'openssl-md5', inEncoding: 'utf8', outEncoding: 'base64', _passphrase: true };
+      return { alg: 'aes-256-cbc', kdf: 'openssl-md5', ...io, _passphrase: true };
     }
     const name = (rec.alg && rec.alg.name) || 'AES';
-    let alg;
-    if (name === 'DES') alg = 'des-cbc';
-    else if (name === 'TripleDES') alg = 'des-ede3-cbc';
-    else alg = `aes-${aesBits(keyBytes)}-cbc`; // WordArray key + explicit IV
-    return { alg, padding: (rec.padding || 'Pkcs7').toLowerCase().includes('pkcs') ? 'pkcs7' : 'none', inEncoding: 'utf8', outEncoding: 'base64' };
+    // Stream ciphers: no block mode / IV / padding.
+    if (name === 'RC4' || name === 'RC4Drop') {
+      return { alg: 'rc4', ...io, ...(name === 'RC4Drop' ? { _note: 'RC4Drop drops leading keystream; verify against target' } : {}) };
+    }
+    if (name === 'Rabbit') {
+      return { custom: 'custom/rabbit.js', ...io, _note: 'Rabbit is not in OpenSSL; provide custom/rabbit.js or replace this cipher' };
+    }
+    // Honor the captured block mode instead of forcing CBC (hook.js records cfg.mode.name).
+    const mode = String(rec.mode || 'CBC').toLowerCase();
+    const modeOk = ['cbc', 'cfb', 'ofb', 'ctr', 'ecb', 'gcm'].includes(mode) ? mode : 'cbc';
+    const padding = (rec.padding || 'Pkcs7').toLowerCase().includes('pkcs') ? 'pkcs7' : 'none';
+    if (name === 'DES') return { alg: `des-${modeOk === 'ecb' ? 'ecb' : 'cbc'}`, padding, ...io };
+    if (name === 'TripleDES') return { alg: `des-ede3-${modeOk === 'ecb' ? 'ecb' : 'cbc'}`, padding, ...io };
+    const spec = { alg: `aes-${aesBits(keyBytes)}-${modeOk}`, ...io }; // WordArray key + explicit IV
+    if (modeOk !== 'gcm' && modeOk !== 'ctr') spec.padding = padding;
+    return spec;
   }
 
   // Guess byte-encoding of a captured key/iv string.

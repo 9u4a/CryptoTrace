@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { symmetricCipher, rsaCipher } from '../src/cipher.mjs';
+import { deriveKey } from '../src/kdf.mjs';
 import { loadCustomCipher } from '../src/custom.mjs';
 import { parsePath, getAt } from '../src/jsonpath.mjs';
 import { createEngine } from '../src/engine.mjs';
@@ -247,4 +248,51 @@ test('integrity: failing rule makes the op not-ok (blocks in Burp)', () => {
   const res = eng.handle({ op: 'encryptRequest', host: 'api.test', port: 443, request: { headers: [], body: '{}', path: '/x' } });
   assert.ok(res.applied.some((a) => !a.ok), JSON.stringify(res.applied));
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('ChaCha20-Poly1305 AEAD round-trips and detects tampering', () => {
+  const c = symmetricCipher({ alg: 'chacha20-poly1305', iv: { from: 'prefix', length: 12 } }, k32);
+  const ct = c.encrypt('평문 secret {"a":1}');
+  assert.equal(c.decrypt(ct), '평문 secret {"a":1}');
+  const bad = Buffer.from(ct, 'base64'); bad[bad.length - 1] ^= 1;
+  assert.throws(() => c.decrypt(bad.toString('base64')));
+});
+
+test('KDF: pbkdf2/scrypt/hkdf derive a usable AES key', () => {
+  const pass = Buffer.from('correct horse battery staple', 'utf8');
+  for (const kdf of ['pbkdf2', 'scrypt', 'hkdf']) {
+    const spec = { alg: 'aes-256-cbc', kdf, iv: { value: '00'.repeat(16), encoding: 'hex' }, kdfParams: { salt: { value: '01'.repeat(16), encoding: 'hex' }, keyLen: 32, iterations: 1000, info: { value: 'ct', encoding: 'utf8' } } };
+    const dk = deriveKey(spec, pass);
+    assert.equal(dk.length, 32, kdf);
+    const c = symmetricCipher(spec, dk);
+    assert.equal(c.decrypt(c.encrypt('hello')), 'hello', kdf);
+  }
+});
+
+test('integrity sign: RSA-PSS and ECDSA signatures verify with the public key', () => {
+  const cases = [
+    { ...crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }), padding: 'pss', vopts: { padding: crypto.constants.RSA_PKCS1_PSS_PADDING } },
+    { ...crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' }), padding: undefined, vopts: {} },
+  ];
+  for (const kp of cases) {
+    const privPem = kp.privateKey.export({ type: 'pkcs8', format: 'pem' });
+    const cfg = {
+      schemaVersion: 1, profile: 'sg',
+      scope: [{ host: 'api.test', pathRegex: '.*' }],
+      keys: { sk: { source: 'static', value: privPem, encoding: 'utf8' } },
+      ciphers: {}, apply: { request: [], response: [] },
+      integrity: [{ type: 'sign', alg: 'sha256', padding: kp.padding, key: 'sk', input: '{body}', outEncoding: 'base64', target: { in: 'header', name: 'X-Sig' } }],
+    };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-sign-'));
+    const file = path.join(dir, 'c.json');
+    fs.writeFileSync(file, JSON.stringify(cfg));
+    const eng = createEngine();
+    assert.equal(eng.handle({ op: 'load', files: [file] }).results[0].error, undefined);
+    const body = '{"amount":100}';
+    const res = eng.handle({ op: 'encryptRequest', host: 'api.test', port: 443, request: { headers: [], body, path: '/x' } });
+    const sig = res.request.headers.find(([n]) => n === 'X-Sig')[1];
+    const ok = crypto.verify('sha256', Buffer.from(body), { key: kp.publicKey, ...kp.vopts }, Buffer.from(sig, 'base64'));
+    assert.ok(ok, 'signature verifies');
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

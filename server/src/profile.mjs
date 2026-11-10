@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { toBytes } from './encoding.mjs';
 import { symmetricCipher, rsaCipher, opensslPassphraseCipher } from './cipher.mjs';
+import { deriveKey } from './kdf.mjs';
 import { loadCustomCipher, loadCustomSign } from './custom.mjs';
 import { parsePath } from './jsonpath.mjs';
 import { INTEGRITY_TYPES } from './integrity.mjs';
@@ -80,7 +81,7 @@ function buildCipher(file, name, spec, store, keySpecs) {
   if (pendingKeys.length) return pendingCipher(name, pendingKeys, keySpecs);
   if (!key) fail(file, `cipher "${name}": needs "key"`);
   if (spec.kdf === 'openssl-md5') return opensslPassphraseCipher(spec, key); // CryptoJS passphrase mode
-  if (spec.kdf) fail(file, `cipher "${name}": unknown kdf "${spec.kdf}"`);
+  if (spec.kdf) return symmetricCipher(spec, deriveKey(spec, key)); // pbkdf2 / scrypt / hkdf
   return symmetricCipher(spec, key);
 }
 
@@ -102,7 +103,7 @@ function validateIntegrity(file, rules = [], store, keySpecs) {
     if (!LOCATIONS.includes(t.in)) fail(file, `integrity #${i}: target.in must be one of ${LOCATIONS.join('/')}`);
     if ((t.in === 'header' || t.in === 'query') && !t.name) fail(file, `integrity #${i}: target needs "name"`);
     if (t.in === 'json' && !t.path) fail(file, `integrity #${i}: target needs "path"`);
-    if (r.type === 'hmac' && !(r.key in keySpecs)) fail(file, `integrity #${i}: unknown key "${r.key}"`);
+    if ((r.type === 'hmac' || r.type === 'sign') && !(r.key in keySpecs)) fail(file, `integrity #${i}: unknown key "${r.key}"`);
     const out = { ...r, target: t.in === 'json' ? { ...t, parts: parsePath(t.path) } : { ...t } };
     if (r.type === 'custom') {
       if (!r.custom) fail(file, `integrity #${i}: custom needs "custom" module path`);

@@ -5,8 +5,9 @@
 // timestamp/nonce rule can feed a later hmac's {ts}/{nonce}.
 import crypto from 'node:crypto';
 import { fromBytes } from './encoding.mjs';
+import { signData } from './cipher.mjs';
 
-export const INTEGRITY_TYPES = new Set(['hmac', 'hash', 'timestamp', 'nonce', 'custom']);
+export const INTEGRITY_TYPES = new Set(['hmac', 'hash', 'sign', 'timestamp', 'nonce', 'custom']);
 
 // Replace {token} references against the current message via read(kind, key) and prior state.
 export function resolveTemplate(tpl, read, state) {
@@ -48,6 +49,14 @@ export function computeRule(rule, ctx) {
       if (!key) throw new Error(`hmac integrity: unknown key "${rule.key}"`);
       const input = resolveTemplate(rule.input ?? '{body}', read, state);
       return fromBytes(crypto.createHmac((rule.alg || 'sha256').toLowerCase(), key).update(input, 'utf8').digest(), rule.outEncoding || 'hex');
+    }
+    case 'sign': {
+      const key = keyStore[rule.key];
+      if (!key) throw new Error(`sign integrity: unknown key "${rule.key}"`);
+      const input = resolveTemplate(rule.input ?? '{body}', read, state);
+      const alg = (rule.alg || 'sha256').toLowerCase();
+      const sig = signData(alg === 'none' ? null : alg, key, Buffer.from(input, 'utf8'), { padding: rule.padding, saltLength: rule.saltLength });
+      return fromBytes(sig, rule.outEncoding || 'base64');
     }
     case 'custom': {
       const sign = ctx.loadCustom(rule);

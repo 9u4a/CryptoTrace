@@ -172,14 +172,69 @@
   };
   trapGlobal('CryptoJS', installCryptoJS);
 
+  // sjcl: high-level sjcl.encrypt(password, plaintext) / sjcl.decrypt(password, ciphertext).
+  const installSjcl = (S) => {
+    if (!S || S.__ct_wrapped || typeof S.encrypt !== 'function' || typeof S.decrypt !== 'function') return;
+    S.__ct_wrapped = true;
+    wrap(S, 'encrypt', (orig) => function (password, plaintext) {
+      const out = orig.apply(this, arguments);
+      send({ lib: 'sjcl', op: 'encrypt', alg: { name: 'AES' }, key: { encoding: 'utf8', value: String(password) },
+        input: { encoding: 'utf8', value: String(plaintext) }, output: { encoding: 'utf8', value: String(out) }, site: site() });
+      return out;
+    });
+    wrap(S, 'decrypt', (orig) => function (password, ciphertext) {
+      const out = orig.apply(this, arguments);
+      send({ lib: 'sjcl', op: 'decrypt', alg: { name: 'AES' }, key: { encoding: 'utf8', value: String(password) },
+        input: { encoding: 'utf8', value: String(ciphertext) }, output: { encoding: 'utf8', value: String(out) }, site: site() });
+      return out;
+    });
+  };
+  trapGlobal('sjcl', installSjcl);
+
+  // node-forge: forge.cipher.createCipher/createDecipher(algorithm, key) -> streaming cipher.
+  // Wrap the returned object's start/update/finish to capture iv, accumulated input and output.
+  // forge ByteBuffers carry their raw bytes in `.data` (a binary/latin1 string).
+  const forgeBytes = (v) => (v && v.data != null ? v.data : v == null ? '' : String(v));
+  const installForge = (F) => {
+    if (!F || F.__ct_wrapped || !F.cipher || typeof F.cipher.createCipher !== 'function') return;
+    F.__ct_wrapped = true;
+    const wrapFactory = (fnName, op) => wrap(F.cipher, fnName, (orig) => function (algorithm, key) {
+      const cipher = orig.apply(this, arguments);
+      try {
+        let iv = null;
+        const chunks = [];
+        const oStart = cipher.start, oUpdate = cipher.update, oFinish = cipher.finish;
+        cipher.start = function (opts) { if (opts && opts.iv != null) iv = forgeBytes(opts.iv); return oStart.apply(this, arguments); };
+        cipher.update = function (buf) { try { chunks.push(forgeBytes(buf)); } catch (_) {} return oUpdate.apply(this, arguments); };
+        cipher.finish = function () {
+          const r = oFinish.apply(this, arguments);
+          send({ lib: 'forge', op, alg: { name: String(algorithm) }, key: { encoding: 'latin1', value: forgeBytes(key) },
+            iv: iv != null ? { encoding: 'latin1', value: iv } : null,
+            input: { encoding: 'latin1', value: chunks.join('') }, output: { encoding: 'latin1', value: forgeBytes(this.output) }, site: site() });
+          return r;
+        };
+      } catch (_) { /* leave the cipher usable even if wrapping fails */ }
+      return cipher;
+    });
+    wrapFactory('createCipher', 'encrypt');
+    wrapFactory('createDecipher', 'decrypt');
+  };
+  trapGlobal('forge', installForge);
+
   // ---- bundled libraries (webpack) ---------------------------------------
   // Real apps bundle crypto-js inside webpack modules, off `window`. Intercept the
   // chunk loader, wrap each module factory, and when its exports look like a known
   // library, hook it with the same installer used for the global.
   const isCryptoJS = (x) => x && x.AES && typeof x.AES.encrypt === 'function' && x.enc && x.lib;
+  const isSjcl = (x) => x && typeof x.encrypt === 'function' && typeof x.decrypt === 'function' && x.cipher && x.codec;
+  const isForge = (x) => x && x.cipher && typeof x.cipher.createCipher === 'function' && x.util && x.md;
   const scanExports = (exp) => {
     if (!exp || typeof exp !== 'object') return;
-    for (const cand of [exp, exp.default]) if (isCryptoJS(cand)) installCryptoJS(cand);
+    for (const cand of [exp, exp.default]) {
+      if (isCryptoJS(cand)) installCryptoJS(cand);
+      if (isSjcl(cand)) installSjcl(cand);
+      if (isForge(cand)) installForge(cand);
+    }
   };
   const wrapFactories = (modules) => {
     if (!modules || typeof modules !== 'object') return;
