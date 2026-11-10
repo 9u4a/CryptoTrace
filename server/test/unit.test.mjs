@@ -296,3 +296,75 @@ test('integrity sign: RSA-PSS and ECDSA signatures verify with the public key', 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('encodings: base32, base58, and a nested [hex,base64] chain round-trip through a cipher', () => {
+  for (const outEncoding of ['base32', 'base58', ['hex', 'base64']]) {
+    const c = symmetricCipher({ alg: 'aes-256-cbc', iv: { value: '00'.repeat(16), encoding: 'hex' }, outEncoding }, k32);
+    assert.equal(c.decrypt(c.encrypt('hello 세계')), 'hello 세계', JSON.stringify(outEncoding));
+  }
+});
+
+const roundTripConfig = (apply) => {
+  const cfg = {
+    schemaVersion: 1, profile: 'rt',
+    scope: [{ host: 'api.test', pathRegex: '.*' }],
+    keys: { k: { source: 'static', value: '11'.repeat(32), encoding: 'hex' } },
+    ciphers: { c1: { alg: 'aes-256-cbc', key: 'k', iv: { value: '22'.repeat(16), encoding: 'hex' }, padding: 'pkcs7' } },
+    apply, integrity: [],
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-rt-'));
+  const file = path.join(dir, 'c.json');
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const eng = createEngine();
+  assert.equal(eng.handle({ op: 'load', files: [file] }).results[0].error, undefined);
+  return { eng, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+};
+
+test('apply in:form encrypts a urlencoded body field and round-trips', () => {
+  const { eng, cleanup } = roundTripConfig({ request: [{ in: 'form', name: 'q', cipher: 'c1' }], response: [] });
+  const body = 'q=secret&x=1';
+  const enc = eng.handle({ op: 'encryptRequest', host: 'api.test', port: 443, request: { headers: [], body, path: '/p' } });
+  assert.ok(enc.applied[0].ok);
+  assert.notEqual(new URLSearchParams(enc.request.body).get('q'), 'secret');
+  const dec = eng.handle({ op: 'decryptRequest', host: 'api.test', port: 443, request: { headers: [], body: enc.request.body, path: '/p' } });
+  assert.equal(new URLSearchParams(dec.request.body).get('q'), 'secret');
+  cleanup();
+});
+
+test('apply in:json with [*] and ..key encrypts every match and round-trips', () => {
+  for (const jpath of ['$.items[*]', '$..token']) {
+    const { eng, cleanup } = roundTripConfig({ request: [{ in: 'json', path: jpath, cipher: 'c1' }], response: [] });
+    const body = JSON.stringify({ items: ['a', 'b'], nested: { token: 'c' }, token: 'd' });
+    const enc = eng.handle({ op: 'encryptRequest', host: 'api.test', port: 443, request: { headers: [], body, path: '/p' } });
+    assert.ok(enc.applied[0].ok, jpath);
+    const dec = eng.handle({ op: 'decryptRequest', host: 'api.test', port: 443, request: { headers: [], body: enc.request.body, path: '/p' } });
+    const back = JSON.parse(dec.request.body);
+    if (jpath === '$.items[*]') assert.deepEqual(back.items, ['a', 'b']);
+    else { assert.equal(back.nested.token, 'c'); assert.equal(back.token, 'd'); }
+    cleanup();
+  }
+});
+
+test('binary body: bodyEncoding echoes on encrypt, drops on decrypt, in:body round-trips', () => {
+  const cfg = {
+    schemaVersion: 1, profile: 'bin',
+    scope: [{ host: 'api.test', pathRegex: '.*' }],
+    keys: { k: { source: 'static', value: '11'.repeat(32), encoding: 'hex' } },
+    ciphers: { c1: { alg: 'aes-256-cbc', key: 'k', iv: { value: '22'.repeat(16), encoding: 'hex' }, padding: 'pkcs7', inEncoding: 'utf8', outEncoding: 'base64' } },
+    apply: { request: [{ in: 'body', cipher: 'c1' }], response: [] }, integrity: [],
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-bin-'));
+  const file = path.join(dir, 'c.json');
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const eng = createEngine();
+  assert.equal(eng.handle({ op: 'load', files: [file] }).results[0].error, undefined);
+
+  // encrypt a plaintext body; a declared binary wire (bodyEncoding) is echoed back for Burp to decode.
+  const enc = eng.handle({ op: 'encryptRequest', host: 'api.test', port: 443, request: { headers: [], body: 'hello', path: '/p', bodyEncoding: 'base64' } });
+  assert.equal(enc.request.bodyEncoding, 'base64');
+  // decrypt returns plaintext for the editor with no transport flag.
+  const dec = eng.handle({ op: 'decryptRequest', host: 'api.test', port: 443, request: { headers: [], body: enc.request.body, path: '/p', bodyEncoding: 'base64' } });
+  assert.equal(dec.request.bodyEncoding, undefined);
+  assert.equal(dec.request.body, 'hello');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

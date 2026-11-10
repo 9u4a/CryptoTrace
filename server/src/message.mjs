@@ -1,7 +1,7 @@
 // Apply a profile's rules to an HTTP message.
 // Message shape (what Burp sends): { headers: [[name, value], ...], body: string, path?: string }
 // `path` (with query string) is only present for requests.
-import { getAt, setAt, parsePath } from './jsonpath.mjs';
+import { getAt, setAt, parsePath, expand } from './jsonpath.mjs';
 import { computeRule } from './integrity.mjs';
 
 export const PLAIN_MARKER = 'x-ct-plain';
@@ -70,11 +70,21 @@ export function transform(profile, rules, msg, direction, integrity = []) {
         const v = queryGet(qs, r.name);
         if (v === undefined) continue;
         qs = querySet(qs, r.name, run(cipher, v));
+      } else if (r.in === 'form') {
+        const v = queryGet(body, r.name); // x-www-form-urlencoded body: same shape as a query string
+        if (v === undefined) continue;
+        body = querySet(body, r.name, run(cipher, v));
       } else if (r.in === 'json') {
         json ??= JSON.parse(body);
-        const v = getAt(json, r.parts);
-        if (v === undefined) continue;
-        json = setAt(json, r.parts, direction === 'decrypt' ? embed(cipher.decrypt(v)) : cipher.encrypt(unembed(v)));
+        const paths = expand(json, r.parts); // [*]/..key fan out; a plain path stays single
+        let any = false;
+        for (const parts of paths) {
+          const v = getAt(json, parts);
+          if (v === undefined) continue;
+          setAt(json, parts, direction === 'decrypt' ? embed(cipher.decrypt(v)) : cipher.encrypt(unembed(v)));
+          any = true;
+        }
+        if (!any) continue;
       }
       applied.push({ in: r.in, where, ok: true });
     } catch (e) {
@@ -91,6 +101,7 @@ export function transform(profile, rules, msg, direction, integrity = []) {
       if (kind === 'body') return body;
       if (kind === 'header') { const i = findHeader(headers, key); return i < 0 ? '' : headers[i][1]; }
       if (kind === 'query') { const v = queryGet(qs, key); return v === undefined ? '' : v; }
+      if (kind === 'form') { const v = queryGet(body, key); return v === undefined ? '' : v; }
       if (kind === 'json') { try { return String(getAt(JSON.parse(body), parsePath(key)) ?? ''); } catch { return ''; } }
       return '';
     };
@@ -102,6 +113,7 @@ export function transform(profile, rules, msg, direction, integrity = []) {
         const value = computeRule(r, { read, keyStore: profile.keyStore || {}, state, loadCustom });
         if (t.in === 'header') { const i = findHeader(headers, t.name); if (i < 0) headers.push([t.name, value]); else headers[i][1] = value; }
         else if (t.in === 'query') qs = queryGet(qs, t.name) === undefined ? (qs ? `${qs}&${encodeURIComponent(t.name)}=${encodeURIComponent(value)}` : `${encodeURIComponent(t.name)}=${encodeURIComponent(value)}`) : querySet(qs, t.name, value);
+        else if (t.in === 'form') body = queryGet(body, t.name) === undefined ? (body ? `${body}&${encodeURIComponent(t.name)}=${encodeURIComponent(value)}` : `${encodeURIComponent(t.name)}=${encodeURIComponent(value)}`) : querySet(body, t.name, value);
         else if (t.in === 'body') body = value;
         else if (t.in === 'json') { const j = JSON.parse(body); setAt(j, t.parts, value); body = JSON.stringify(j); }
         applied.push({ in: t.in, where, integrity: r.type, ok: true });
@@ -113,5 +125,9 @@ export function transform(profile, rules, msg, direction, integrity = []) {
 
   const out = { headers, body };
   if (msg.path !== undefined) out.path = qs ? `${pathname}?${qs}` : pathname;
+  // Binary bodies travel to/from Burp as base64 (bodyEncoding). On encrypt the produced body is the
+  // re-encrypted bytes (the in:body cipher's outEncoding should match), so Burp base64-decodes it back
+  // to the wire. On decrypt the body is plaintext text for the editor, so the flag is dropped.
+  if (direction === 'encrypt' && msg.bodyEncoding) out.bodyEncoding = msg.bodyEncoding;
   return { message: out, applied };
 }

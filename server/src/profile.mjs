@@ -9,7 +9,7 @@ import { parsePath } from './jsonpath.mjs';
 import { INTEGRITY_TYPES } from './integrity.mjs';
 
 export const SCHEMA_VERSION = 1;
-const LOCATIONS = ['json', 'body', 'header', 'query'];
+const LOCATIONS = ['json', 'body', 'header', 'query', 'form'];
 
 function fail(file, msg) {
   throw new Error(`${path.basename(file)}: ${msg}`);
@@ -89,7 +89,7 @@ function validateRules(file, rules = [], ciphers) {
   return rules.map((r, i) => {
     if (!LOCATIONS.includes(r.in)) fail(file, `apply rule #${i}: "in" must be one of ${LOCATIONS.join('/')}`);
     if (!(r.cipher in ciphers)) fail(file, `apply rule #${i}: unknown cipher "${r.cipher}"`);
-    if ((r.in === 'header' || r.in === 'query') && !r.name) fail(file, `apply rule #${i}: needs "name"`);
+    if ((r.in === 'header' || r.in === 'query' || r.in === 'form') && !r.name) fail(file, `apply rule #${i}: needs "name"`);
     return { ...r, parts: r.in === 'json' ? parsePath(r.path) : null };
   });
 }
@@ -101,7 +101,7 @@ function validateIntegrity(file, rules = [], store, keySpecs) {
     if (!INTEGRITY_TYPES.has(r.type)) fail(file, `integrity #${i}: unknown type "${r.type}"`);
     const t = r.target || {};
     if (!LOCATIONS.includes(t.in)) fail(file, `integrity #${i}: target.in must be one of ${LOCATIONS.join('/')}`);
-    if ((t.in === 'header' || t.in === 'query') && !t.name) fail(file, `integrity #${i}: target needs "name"`);
+    if ((t.in === 'header' || t.in === 'query' || t.in === 'form') && !t.name) fail(file, `integrity #${i}: target needs "name"`);
     if (t.in === 'json' && !t.path) fail(file, `integrity #${i}: target needs "path"`);
     if ((r.type === 'hmac' || r.type === 'sign') && !(r.key in keySpecs)) fail(file, `integrity #${i}: unknown key "${r.key}"`);
     const out = { ...r, target: t.in === 'json' ? { ...t, parts: parsePath(t.path) } : { ...t } };

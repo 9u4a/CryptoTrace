@@ -1,5 +1,6 @@
 package com.cryptotrace;
 
+import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
@@ -7,7 +8,11 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,7 +68,7 @@ public final class Crypto {
         JsonObject msg = new JsonObject();
         msg.addProperty("path", req.path());
         msg.add("headers", headersJson(req.headers()));
-        msg.addProperty("body", req.bodyToString());
+        putBody(msg, req.body());
         JsonObject args = target(req);
         args.add("request", msg);
         JsonObject res = server.call(op, args);
@@ -72,14 +77,42 @@ public final class Crypto {
         HttpRequest rebuilt = req;
         if (out.has("path") && !out.get("path").getAsString().equals(req.path())) rebuilt = rebuilt.withPath(out.get("path").getAsString());
         rebuilt = applyHeaders(rebuilt, req.headers(), out.getAsJsonArray("headers"));
-        rebuilt = rebuilt.withBody(out.get("body").getAsString());
+        rebuilt = isBase64Body(out) ? rebuilt.withBody(decodeBody(out)) : rebuilt.withBody(out.get("body").getAsString());
         return new Result<>(matched, rebuilt, res.getAsJsonArray("applied"));
+    }
+
+    /** Send the body as text when it is valid UTF-8, else base64 with bodyEncoding so bytes survive. */
+    private static void putBody(JsonObject msg, ByteArray body) {
+        byte[] raw = body.getBytes();
+        if (isUtf8(raw)) {
+            msg.addProperty("body", new String(raw, StandardCharsets.UTF_8));
+        } else {
+            msg.addProperty("body", Base64.getEncoder().encodeToString(raw));
+            msg.addProperty("bodyEncoding", "base64");
+        }
+    }
+
+    private static boolean isBase64Body(JsonObject out) {
+        return out.has("bodyEncoding") && !out.get("bodyEncoding").isJsonNull() && "base64".equals(out.get("bodyEncoding").getAsString());
+    }
+
+    private static ByteArray decodeBody(JsonObject out) {
+        return ByteArray.byteArray(Base64.getDecoder().decode(out.get("body").getAsString()));
+    }
+
+    private static boolean isUtf8(byte[] b) {
+        try {
+            StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(b));
+            return true;
+        } catch (CharacterCodingException e) {
+            return false;
+        }
     }
 
     private Result<HttpResponse> responseOp(String op, HttpRequest req, HttpResponse resp) throws ServerClient.ServerException {
         JsonObject msg = new JsonObject();
         msg.add("headers", headersJson(resp.headers()));
-        msg.addProperty("body", resp.bodyToString());
+        putBody(msg, resp.body());
         JsonObject args = target(req);
         args.addProperty("path", req.path());
         args.add("response", msg);
@@ -95,7 +128,7 @@ public final class Crypto {
             String v = e.getAsJsonArray().get(1).getAsString();
             rebuilt = rebuilt.hasHeader(n) ? rebuilt.withUpdatedHeader(n, v) : rebuilt.withAddedHeader(n, v);
         }
-        rebuilt = rebuilt.withBody(out.get("body").getAsString());
+        rebuilt = isBase64Body(out) ? rebuilt.withBody(decodeBody(out)) : rebuilt.withBody(out.get("body").getAsString());
         return new Result<>(matched, rebuilt, res.getAsJsonArray("applied"));
     }
 
