@@ -38,6 +38,44 @@ function querySetOrAdd(qs, name, value) {
   return qs ? `${qs}&${pair}` : pair;
 }
 
+// ---- multipart/form-data: operate on one named text field's value, structure preserved ----
+// Only text fields (UTF-8 bodies); binary file parts travel base64 (bodyEncoding) and are out of scope.
+function boundaryOf(headers) {
+  const i = findHeader(headers, 'content-type');
+  if (i < 0) return null;
+  const m = /boundary=("?)([^";]+)\1/i.exec(headers[i][1]);
+  return m ? m[2] : null;
+}
+function partValue(part) {
+  const h = part.indexOf('\r\n\r\n');
+  if (h < 0) return null;
+  const nm = /name="([^"]*)"/i.exec(part.slice(0, h));
+  if (!nm) return null;
+  let val = part.slice(h + 4);
+  if (val.endsWith('\r\n')) val = val.slice(0, -2);
+  return { name: nm[1], headEnd: h + 4, value: val };
+}
+function multipartGet(body, boundary, name) {
+  for (const part of body.split('--' + boundary)) {
+    const p = partValue(part);
+    if (p && p.name === name) return p.value;
+  }
+  return undefined;
+}
+function multipartSet(body, boundary, name, value) {
+  const delim = '--' + boundary;
+  const parts = body.split(delim);
+  for (let k = 0; k < parts.length; k++) {
+    const p = partValue(parts[k]);
+    if (p && p.name === name) {
+      const trail = parts[k].endsWith('\r\n') ? '\r\n' : '';
+      parts[k] = parts[k].slice(0, p.headEnd) + value + trail;
+      return parts.join(delim);
+    }
+  }
+  return body;
+}
+
 // Plaintext that is itself JSON is shown as a nested object so it can be edited in place,
 // and serialized back (compact) before encryption.
 const embed = (plain) => {
@@ -81,6 +119,12 @@ export function transform(profile, rules, msg, direction, integrity = []) {
         const v = queryGet(body, r.name); // x-www-form-urlencoded body: same shape as a query string
         if (v === undefined) continue;
         body = querySet(body, r.name, run(cipher, v));
+      } else if (r.in === 'multipart') {
+        const boundary = boundaryOf(headers);
+        if (!boundary) continue;
+        const v = multipartGet(body, boundary, r.name);
+        if (v === undefined) continue;
+        body = multipartSet(body, boundary, r.name, run(cipher, v));
       } else if (r.in === 'json') {
         json ??= JSON.parse(body);
         const paths = expand(json, r.parts); // [*]/..key fan out; a plain path stays single
@@ -109,6 +153,7 @@ export function transform(profile, rules, msg, direction, integrity = []) {
       if (kind === 'header') { const i = findHeader(headers, key); return i < 0 ? '' : headers[i][1]; }
       if (kind === 'query') { const v = queryGet(qs, key); return v === undefined ? '' : v; }
       if (kind === 'form') { const v = queryGet(body, key); return v === undefined ? '' : v; }
+      if (kind === 'multipart') { const bd = boundaryOf(headers); const v = bd ? multipartGet(body, bd, key) : undefined; return v === undefined ? '' : v; }
       if (kind === 'json') { try { return String(getAt(JSON.parse(body), parsePath(key)) ?? ''); } catch { return ''; } }
       return '';
     };
@@ -121,6 +166,7 @@ export function transform(profile, rules, msg, direction, integrity = []) {
         if (t.in === 'header') { const i = findHeader(headers, t.name); if (i < 0) headers.push([t.name, value]); else headers[i][1] = value; }
         else if (t.in === 'query') qs = querySetOrAdd(qs, t.name, value);
         else if (t.in === 'form') body = querySetOrAdd(body, t.name, value);
+        else if (t.in === 'multipart') { const bd = boundaryOf(headers); if (bd) body = multipartSet(body, bd, t.name, value); }
         else if (t.in === 'body') body = value;
         else if (t.in === 'json') { const j = JSON.parse(body); setAt(j, t.parts, value); body = JSON.stringify(j); }
         applied.push({ in: t.in, where, integrity: r.type, ok: true });

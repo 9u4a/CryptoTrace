@@ -14,6 +14,14 @@ beside the existing ones and, for any `server/` change, rebuild the exe (`node s
 `server/src/kdf.mjs` — add a branch to `deriveKey` (pbkdf2/scrypt/hkdf today). `profile.mjs buildCipher`
 already routes any `spec.kdf` through it. CryptoJS passphrase mode is the separate `openssl-md5` path.
 
+## EC key agreement (ECDH)
+`cipher.mjs ecdhShared(curve, priv, peerPub)` + the `spec.ecdh` branch in `profile.mjs buildCipher`.
+Set `spec.ecdh = { curve?, peerPublicKey }` and `spec.key` to our private scalar: the shared secret
+(optionally through `spec.kdf`) becomes the symmetric key for `symmetricCipher`. This covers **fixed-key**
+ECDH (both sides known). **Per-request ephemeral ECIES** (an ephemeral public key prefixed to each
+ciphertext, recipient private key required to decrypt) is not built in — port it as a custom cipher
+module (`custom.mjs`): parse the ephemeral point, call `ecdhShared`, derive, then symmetric-decrypt.
+
 ## Integrity rule type (token / signature)
 `server/src/integrity.mjs` — add a `case` to `computeRule` and the name to `INTEGRITY_TYPES`. If it needs
 a key, extend the key check in `profile.mjs validateIntegrity`. Signing primitives live in
@@ -23,6 +31,15 @@ a key, extend the key check in `profile.mjs validateIntegrity`. Signing primitiv
 `server/src/message.mjs` — add a branch in `transform` (cipher side) and the integrity read/write, and add
 the name to `LOCATIONS` in `profile.mjs`. Reuse `queryGet` / `querySetOrAdd` for key=value shapes. For
 Scanner insertion points, add a `case` in `burp-ext/.../PlainInsertionPoints.java`.
+Built in today: `json` / `body` / `header` / `query` / `form` / `multipart`. `multipart` handles one named
+**text** field (`boundaryOf`/`multipartGet`/`multipartSet`); binary file parts travel base64 and are out of
+scope. A binary **wire body** needs no new location — give the `in:body` cipher a text `outEncoding`
+(base64/hex) and Burp decodes it to raw bytes via the `bodyEncoding` transport flag.
+
+## Config conflict warnings
+`profile.mjs collectWarnings` — non-fatal load-time smells surfaced in the `load` result's `warnings[]`
+(Burp logs them). Today it flags an `in:body` rule coexisting with `in:json`/`form`/`multipart` in one
+direction (they fight over the same body). Add a check here for any new footgun.
 
 ## Byte encoding
 `server/src/encoding.mjs` — add a case to `toBytesOne` / `fromBytesOne` and the name to `ENCODINGS`.

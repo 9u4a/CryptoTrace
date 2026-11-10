@@ -2,14 +2,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { toBytes } from './encoding.mjs';
-import { symmetricCipher, rsaCipher, opensslPassphraseCipher } from './cipher.mjs';
+import { symmetricCipher, rsaCipher, opensslPassphraseCipher, ecdhShared } from './cipher.mjs';
 import { deriveKey } from './kdf.mjs';
 import { loadCustomCipher, loadCustomSign } from './custom.mjs';
 import { parsePath } from './jsonpath.mjs';
 import { INTEGRITY_TYPES } from './integrity.mjs';
 
 export const SCHEMA_VERSION = 1;
-const LOCATIONS = ['json', 'body', 'header', 'query', 'form'];
+const LOCATIONS = ['json', 'body', 'header', 'query', 'form', 'multipart'];
 
 function fail(file, msg) {
   throw new Error(`${path.basename(file)}: ${msg}`);
@@ -77,6 +77,18 @@ function buildCipher(file, name, spec, store, keySpecs) {
     if (pendingKeys.length) return pendingCipher(name, pendingKeys, keySpecs);
     return rsaCipher(spec, pub, priv);
   }
+  // EC key agreement: our private scalar + the peer's static public point -> symmetric key.
+  // Covers the fixed-key ECDH case (both sides known); per-request ephemeral ECIES stays a custom
+  // module (see docs/EXTENDING.md). spec.ecdh = { curve?, peerPublicKey }; spec.key = our scalar.
+  if (spec.ecdh) {
+    const priv = keyOf(spec.key);
+    const peer = keyOf(spec.ecdh.peerPublicKey);
+    if (pendingKeys.length) return pendingCipher(name, pendingKeys, keySpecs);
+    if (!priv) fail(file, `cipher "${name}": ecdh needs "key" (our private scalar)`);
+    if (!peer) fail(file, `cipher "${name}": ecdh needs "peerPublicKey"`);
+    const shared = ecdhShared(spec.ecdh.curve || 'prime256v1', priv, peer);
+    return symmetricCipher(spec, spec.kdf ? deriveKey(spec, shared) : shared);
+  }
   const key = keyOf(spec.key);
   if (pendingKeys.length) return pendingCipher(name, pendingKeys, keySpecs);
   if (!key) fail(file, `cipher "${name}": needs "key"`);
@@ -89,7 +101,7 @@ function validateRules(file, rules = [], ciphers) {
   return rules.map((r, i) => {
     if (!LOCATIONS.includes(r.in)) fail(file, `apply rule #${i}: "in" must be one of ${LOCATIONS.join('/')}`);
     if (!(r.cipher in ciphers)) fail(file, `apply rule #${i}: unknown cipher "${r.cipher}"`);
-    if ((r.in === 'header' || r.in === 'query' || r.in === 'form') && !r.name) fail(file, `apply rule #${i}: needs "name"`);
+    if ((r.in === 'header' || r.in === 'query' || r.in === 'form' || r.in === 'multipart') && !r.name) fail(file, `apply rule #${i}: needs "name"`);
     return { ...r, parts: r.in === 'json' ? parsePath(r.path) : null };
   });
 }
@@ -101,7 +113,7 @@ function validateIntegrity(file, rules = [], store, keySpecs) {
     if (!INTEGRITY_TYPES.has(r.type)) fail(file, `integrity #${i}: unknown type "${r.type}"`);
     const t = r.target || {};
     if (!LOCATIONS.includes(t.in)) fail(file, `integrity #${i}: target.in must be one of ${LOCATIONS.join('/')}`);
-    if ((t.in === 'header' || t.in === 'query' || t.in === 'form') && !t.name) fail(file, `integrity #${i}: target needs "name"`);
+    if ((t.in === 'header' || t.in === 'query' || t.in === 'form' || t.in === 'multipart') && !t.name) fail(file, `integrity #${i}: target needs "name"`);
     if (t.in === 'json' && !t.path) fail(file, `integrity #${i}: target needs "path"`);
     if ((r.type === 'hmac' || r.type === 'sign') && !(r.key in keySpecs)) fail(file, `integrity #${i}: unknown key "${r.key}"`);
     const out = { ...r, target: t.in === 'json' ? { ...t, parts: parsePath(t.path) } : { ...t } };
@@ -111,6 +123,24 @@ function validateIntegrity(file, rules = [], store, keySpecs) {
     }
     return out;
   });
+}
+
+// Non-fatal config smells worth surfacing at load. Today: body-level rules that fight over the same
+// body — an in:body cipher rewrites the WHOLE body, while in:json/form/multipart parse that body, so
+// combining them in one direction silently clobbers one or the other (almost always a misconfig).
+const BODY_PARSERS = new Set(['json', 'form', 'multipart']);
+function collectWarnings(request, response, integrity, integrityResponse) {
+  const out = [];
+  const check = (dir, rules) => {
+    const hasBody = rules.some((r) => r.in === 'body');
+    const parsers = [...new Set(rules.filter((r) => BODY_PARSERS.has(r.in)).map((r) => r.in))];
+    if (hasBody && parsers.length) {
+      out.push(`${dir}: an in:body rule and in:${parsers.join('/')} rule(s) both rewrite the body; they will clobber each other — keep one body strategy per direction`);
+    }
+  };
+  check('apply.request', [...request, ...integrity.map((r) => ({ in: r.target.in }))]);
+  check('apply.response', [...response, ...integrityResponse.map((r) => ({ in: r.target.in }))]);
+  return out;
 }
 
 export function loadProfile(file) {
@@ -167,6 +197,7 @@ export function loadProfile(file) {
   profile.response = validateRules(file, cfg.apply?.response, profile.ciphers);
   profile.integrity = validateIntegrity(file, cfg.integrity, store, keySpecs);
   profile.integrityResponse = validateIntegrity(file, cfg.integrityResponse, store, keySpecs);
+  profile.warnings = collectWarnings(profile.request, profile.response, profile.integrity, profile.integrityResponse);
 
   // Runtime key capture: store the bytes and rebuild so dependent ciphers become usable.
   profile.setKey = (keyName, value, encoding) => {

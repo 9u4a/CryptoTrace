@@ -139,6 +139,18 @@ export function signData(alg, privKeyBytes, data, { padding, saltLength } = {}) 
   return crypto.sign(alg || null, Buffer.from(data), opts);
 }
 
+/**
+ * ECDH shared secret: our private scalar + the peer's public point -> raw shared bytes.
+ * Used to turn an EC key agreement into a symmetric key (optionally through a KDF). `curve` is a
+ * Node/OpenSSL curve name (prime256v1, secp256k1, secp384r1, ...). privBytes = raw private scalar,
+ * peerPubBytes = the peer's public point (uncompressed 0x04... or compressed).
+ */
+export function ecdhShared(curve, privBytes, peerPubBytes) {
+  const ecdh = crypto.createECDH(curve);
+  ecdh.setPrivateKey(Buffer.from(privBytes));
+  return ecdh.computeSecret(Buffer.from(peerPubBytes));
+}
+
 function asKeyObject(bytesOrPem, kind) {
   const s = bytesOrPem.toString('utf8');
   if (s.includes('-----BEGIN')) return kind === 'public' ? crypto.createPublicKey(s) : crypto.createPrivateKey(s);

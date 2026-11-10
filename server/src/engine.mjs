@@ -29,7 +29,7 @@ export function createEngine() {
           const p = loadProfile(file);
           loaded.push(p);
           const scope = p.scope.map((s) => ({ host: s.host, port: s.port, pathRegex: s.pathRegex }));
-          return { file, profile: p.name, selftest: selftest(p), captures: p.captures, scope };
+          return { file, profile: p.name, selftest: selftest(p), captures: p.captures, scope, warnings: p.warnings };
         } catch (e) {
           return { file, error: e.message };
         }

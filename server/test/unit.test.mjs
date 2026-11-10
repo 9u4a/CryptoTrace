@@ -369,6 +369,63 @@ test('binary body: bodyEncoding echoes on encrypt, drops on decrypt, in:body rou
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('ecdh: static EC key agreement derives a shared key via HKDF and round-trips', () => {
+  const a = crypto.createECDH('prime256v1'); a.generateKeys();
+  const b = crypto.createECDH('prime256v1'); b.generateKeys();
+  assert.ok(a.computeSecret(b.getPublicKey()).equals(b.computeSecret(a.getPublicKey())), 'shared secret agrees');
+  const cfg = {
+    schemaVersion: 1, profile: 'ec',
+    scope: [{ host: 'api.test', pathRegex: '.*' }],
+    keys: {
+      mine: { source: 'static', value: a.getPrivateKey('hex'), encoding: 'hex' },
+      peer: { source: 'static', value: b.getPublicKey('hex'), encoding: 'hex' },
+    },
+    ciphers: { c1: { alg: 'aes-256-cbc', key: 'mine', ecdh: { curve: 'prime256v1', peerPublicKey: 'peer' },
+      kdf: 'hkdf', kdfParams: { keyLen: 32 }, iv: { value: '22'.repeat(16), encoding: 'hex' } } },
+    apply: { request: [{ in: 'json', path: '$.data', cipher: 'c1' }], response: [] }, integrity: [],
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-ec-'));
+  const file = path.join(dir, 'c.json');
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const eng = createEngine();
+  assert.equal(eng.handle({ op: 'load', files: [file] }).results[0].error, undefined);
+  const enc = eng.handle({ op: 'encryptRequest', host: 'api.test', port: 443, request: { headers: [], body: JSON.stringify({ data: 'hi' }), path: '/x' } });
+  assert.ok(enc.applied[0].ok, JSON.stringify(enc.applied));
+  const dec = eng.handle({ op: 'decryptRequest', host: 'api.test', port: 443, request: { headers: [], body: enc.request.body, path: '/x' } });
+  assert.equal(JSON.parse(dec.request.body).data, 'hi');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('apply in:multipart encrypts a named text field, leaves others intact, round-trips', () => {
+  const { eng, cleanup } = roundTripConfig({ request: [{ in: 'multipart', name: 'token', cipher: 'c1' }], response: [] });
+  const headers = [['Content-Type', 'multipart/form-data; boundary=X']];
+  const body = '--X\r\nContent-Disposition: form-data; name="token"\r\n\r\nsecret\r\n--X\r\nContent-Disposition: form-data; name="keep"\r\n\r\nplain\r\n--X--\r\n';
+  const enc = eng.handle({ op: 'encryptRequest', host: 'api.test', port: 443, request: { headers, body, path: '/p' } });
+  assert.ok(enc.applied[0].ok, JSON.stringify(enc.applied));
+  assert.ok(!enc.request.body.includes('\r\n\r\nsecret\r\n'), 'token value was encrypted');
+  assert.ok(enc.request.body.includes('name="keep"\r\n\r\nplain\r\n'), 'other field untouched');
+  const dec = eng.handle({ op: 'decryptRequest', host: 'api.test', port: 443, request: { headers, body: enc.request.body, path: '/p' } });
+  assert.ok(dec.request.body.includes('name="token"\r\n\r\nsecret\r\n'), 'token decrypts back');
+  cleanup();
+});
+
+test('load warns when in:body and in:json rules fight over one body', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-warn-'));
+  const file = path.join(dir, 'c.json');
+  fs.writeFileSync(file, JSON.stringify({
+    schemaVersion: 1, profile: 'warn',
+    scope: [{ host: 'api.test', pathRegex: '.*' }],
+    keys: { k: { source: 'static', value: '11'.repeat(32), encoding: 'hex' } },
+    ciphers: { c1: { alg: 'aes-256-cbc', key: 'k', iv: { value: '22'.repeat(16), encoding: 'hex' } } },
+    apply: { request: [{ in: 'body', cipher: 'c1' }, { in: 'json', path: '$.a', cipher: 'c1' }], response: [] }, integrity: [],
+  }));
+  const eng = createEngine();
+  const r = eng.handle({ op: 'load', files: [file] }).results[0];
+  assert.equal(r.error, undefined, r.error);
+  assert.ok(r.warnings.length > 0 && r.warnings.some((w) => /clobber/.test(w)), JSON.stringify(r.warnings));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('scope host wildcard *.example.test matches subdomains and apex, not others', () => {
   const cfg = {
     schemaVersion: 1, profile: 'wild',

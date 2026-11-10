@@ -174,6 +174,9 @@ public final class SettingsTab {
                     }
                     append(sc.toString());
                 }
+                if (o.has("warnings") && !o.get("warnings").isJsonNull()) {
+                    for (JsonElement w : o.getAsJsonArray("warnings")) append("  WARN " + w.getAsString());
+                }
             }
             setStatus(bad == 0, bad == 0 ? "running — " + files.size() + " config(s)" : "running with " + bad + " problem(s) — see log");
         } catch (Exception e) {
