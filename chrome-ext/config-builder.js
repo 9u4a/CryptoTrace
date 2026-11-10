@@ -80,6 +80,12 @@
 
     const hosts = new Set();
     let ci = 0;
+    // One cipher + one rule per apply location. A page re-encrypts the same field on
+    // every user action, so the same $.data is captured many times over a session.
+    // Emitting a rule per capture makes the server stack encryption layers on re-encrypt
+    // (each adds ~1.33x via base64 -> NN-fold body blow-up and a broken request). The
+    // first capture at a location defines the cipher; later ones only add selftest vectors.
+    const ruleByLoc = new Map(); // "in|path|name" -> cipher id
     const keyNameFor = (entry) => {
       const sig = JSON.stringify(entry);
       for (const [n, e] of Object.entries(cfg.keys)) if (JSON.stringify(e) === sig) return n;
@@ -98,26 +104,32 @@
       else if (r.lib === 'jsencrypt') spec = { alg: 'rsa', padding: 'pkcs1' };
       if (!spec) continue;
 
-      const id = 'c' + ++ci;
-      if (spec.alg === 'rsa') {
-        cfg.ciphers[id] = spec; // keys (public/private) must be filled in by the analyst
-        spec._note = 'RSA: add publicKey/privateKey (DER base64 or PEM) manually';
+      // Reuse the cipher already chosen for this apply location instead of stacking a new one.
+      const locKey = r.apply ? `${r.apply.in}|${r.apply.path || ''}|${r.apply.name || ''}` : null;
+      let id;
+      if (locKey && ruleByLoc.has(locKey)) {
+        id = ruleByLoc.get(locKey); // same field seen again this session -> selftest vector only
       } else {
-        const passphrase = spec._passphrase;
-        delete spec._passphrase;
-        // passphrase mode stores the string passphrase (utf8); the salt/IV are derived per message
-        const ke = passphrase
-          ? { source: 'static', value: String(r.key && r.key.value), encoding: 'utf8' }
-          : keyEntry(r.key);
-        if (ke) spec.key = keyNameFor(ke);
-        if (!passphrase && r.iv && r.iv.value && !spec.iv) spec.iv = { value: r.iv.value, encoding: r.iv.encoding === 'base64' ? 'base64' : 'hex' };
-        cfg.ciphers[id] = spec;
-      }
-
-      // apply rule from correlated transport location (request side)
-      if (r.apply) {
-        const rule = { ...r.apply, cipher: id };
-        if (!cfg.apply.request.some((x) => JSON.stringify(x) === JSON.stringify(rule))) cfg.apply.request.push(rule);
+        id = 'c' + ++ci;
+        if (spec.alg === 'rsa') {
+          cfg.ciphers[id] = spec; // keys (public/private) must be filled in by the analyst
+          spec._note = 'RSA: add publicKey/privateKey (DER base64 or PEM) manually';
+        } else {
+          const passphrase = spec._passphrase;
+          delete spec._passphrase;
+          // passphrase mode stores the string passphrase (utf8); the salt/IV are derived per message
+          const ke = passphrase
+            ? { source: 'static', value: String(r.key && r.key.value), encoding: 'utf8' }
+            : keyEntry(r.key);
+          if (ke) spec.key = keyNameFor(ke);
+          if (!passphrase && r.iv && r.iv.value && !spec.iv) spec.iv = { value: r.iv.value, encoding: r.iv.encoding === 'base64' ? 'base64' : 'hex' };
+          cfg.ciphers[id] = spec;
+        }
+        // apply rule from correlated transport location (request side)
+        if (locKey) {
+          cfg.apply.request.push({ ...r.apply, cipher: id });
+          ruleByLoc.set(locKey, id);
+        }
       }
       // selftest vector when we have both plaintext and ciphertext
       if (r.op === 'encrypt' && r.input && r.output && r.input.encoding === 'utf8') {

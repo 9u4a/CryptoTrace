@@ -142,6 +142,35 @@ test('CryptoJS passphrase mode -> openssl-md5 kdf and self-tests', () => {
   assert.ok(res.selftest.every((t) => t.ok), JSON.stringify(res.selftest));
 });
 
+test('repeated captures of one field -> a single apply rule (no stacked re-encryption)', () => {
+  const buildConfig = loadBuilder();
+  const keyHex = '00112233445566778899aabbccddeeff'; // leakcheck:allow
+  const ivHex = '0102030405060708090a0b0c0d0e0f10'; // leakcheck:allow
+  const key = CryptoJS.enc.Hex.parse(keyHex);
+  const iv = CryptoJS.enc.Hex.parse(ivHex);
+  // A page encrypts $.data on every user action: same location, many different plaintexts.
+  const plains = ['{"a":1}', '{"a":2}', '{"a":3,"b":"x"}', '{"a":4}'];
+  const records = plains.map((plain) => ({
+    lib: 'cryptojs', op: 'encrypt', alg: { name: 'AES' }, padding: 'Pkcs7',
+    key: { encoding: 'cryptojs', value: keyHex }, iv: { encoding: 'cryptojs', value: ivHex },
+    input: { encoding: 'utf8', value: plain },
+    output: { encoding: 'cryptojs', value: CryptoJS.AES.encrypt(plain, key, { iv }).toString() },
+    apply: { in: 'json', path: '$.data' }, frame: 'http://127.0.0.1:8088/',
+  }));
+  const cfg = buildConfig(records);
+
+  // Exactly one rule for $.data — not one per capture (which would stack ciphers on encrypt).
+  const dataRules = cfg.apply.request.filter((r) => r.in === 'json' && r.path === '$.data');
+  assert.equal(dataRules.length, 1, JSON.stringify(cfg.apply.request));
+  // Every capture became a selftest vector for that one cipher.
+  assert.equal(cfg.selftest.length, plains.length);
+  assert.ok(cfg.selftest.every((v) => v.cipher === dataRules[0].cipher));
+
+  const res = loadIntoEngine(cfg);
+  assert.equal(res.error, undefined, res.error);
+  assert.ok(res.selftest.every((t) => t.ok), JSON.stringify(res.selftest));
+});
+
 function write(cfg) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-cb-'));
   const file = path.join(dir, 'config.json');
