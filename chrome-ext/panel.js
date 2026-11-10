@@ -146,8 +146,17 @@ function addRecord(rec) {
 function correlate(t) {
   const recentOutputs = records
     .filter((r) => r.output && r.output.value && r.lib !== 'transport')
-    .slice(-30);
-  const find = (value) => recentOutputs.find((r) => value && value.includes(r.output.value));
+    .slice(-80);
+  // Match the ciphertext even when the request re-encodes it: URL-encoded in a query/body field,
+  // or carried with base64 padding stripped. JSON field values arrive already unescaped.
+  const urldec = (s) => { try { return decodeURIComponent(String(s).replace(/\+/g, ' ')); } catch (_) { return String(s); } };
+  const match = (value, out) => {
+    if (!value || !out) return false;
+    const hay = [String(value), urldec(value)];
+    const needles = [out, out.replace(/=+$/, '')];
+    return hay.some((h) => needles.some((n) => n && h.includes(n)));
+  };
+  const find = (value) => recentOutputs.find((r) => match(value, r.output.value));
 
   const b = t.body || {};
   if (b.kind === 'json' && Array.isArray(b.fields)) {

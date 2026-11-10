@@ -163,6 +163,17 @@ public final class SettingsTab {
                             .append(ok ? "OK" : "FAIL(" + tt.get("error").getAsString() + ")");
                 }
                 append(sb.toString());
+                if (o.has("scope") && !o.get("scope").isJsonNull()) {
+                    StringBuilder sc = new StringBuilder("  scope:");
+                    for (JsonElement se : o.getAsJsonArray("scope")) {
+                        JsonObject so = se.getAsJsonObject();
+                        sc.append(' ').append(so.get("host").getAsString());
+                        if (so.has("port") && !so.get("port").isJsonNull()) sc.append(':').append(so.get("port").getAsString());
+                        String pr = so.get("pathRegex").getAsString();
+                        if (!".*".equals(pr)) sc.append(" path=").append(pr);
+                    }
+                    append(sc.toString());
+                }
             }
             setStatus(bad == 0, bad == 0 ? "running — " + files.size() + " config(s)" : "running with " + bad + " problem(s) — see log");
         } catch (Exception e) {

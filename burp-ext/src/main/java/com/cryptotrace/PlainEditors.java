@@ -2,6 +2,7 @@ package com.cryptotrace;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.ByteArray;
+import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
@@ -76,7 +77,9 @@ public final class PlainEditors {
         @Override
         public HttpRequest getRequest() {
             if (!editor.isModified() || decrypted == null) return current.request();
-            HttpRequest edited = HttpRequest.httpRequest(current.request().httpService(), stripNote(editor.getContents()));
+            // Apply the edited path/headers/body onto the ORIGINAL request object so its HTTP/2
+            // metadata, header order and casing survive (parsing raw text would discard them).
+            HttpRequest edited = mergeOnto(current.request(), stripNote(editor.getContents()));
             try {
                 Crypto.Result<HttpRequest> enc = crypto.encryptRequest(edited);
                 if (!enc.allOk()) api.logging().logToError("CryptoTrace re-encrypt: " + enc.errors());
@@ -85,6 +88,21 @@ public final class PlainEditors {
                 api.logging().logToError("CryptoTrace re-encrypt failed, keeping original: " + e.getMessage());
                 return current.request();
             }
+        }
+
+        /** Parse the editor text only to read its fields, then transplant them onto `base`. */
+        private static HttpRequest mergeOnto(HttpRequest base, String editedText) {
+            HttpRequest parsed = HttpRequest.httpRequest(base.httpService(), ByteArray.byteArray(editedText));
+            HttpRequest merged = parsed.path().equals(base.path()) ? base : base.withPath(parsed.path());
+            java.util.Set<String> want = new java.util.HashSet<>();
+            for (HttpHeader h : parsed.headers()) want.add(h.name().toLowerCase());
+            for (HttpHeader h : base.headers()) if (!want.contains(h.name().toLowerCase())) merged = merged.withRemovedHeader(h.name());
+            for (HttpHeader h : parsed.headers()) {
+                String old = merged.headerValue(h.name());
+                if (old == null) merged = merged.withAddedHeader(h.name(), h.value());
+                else if (!old.equals(h.value())) merged = merged.withUpdatedHeader(h.name(), h.value());
+            }
+            return merged.withBody(parsed.body());
         }
 
         @Override

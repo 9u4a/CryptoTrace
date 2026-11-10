@@ -131,6 +131,7 @@ export function loadProfile(file) {
   const scope = (cfg.scope || []).map((s) => ({
     host: String(s.host || '').toLowerCase(),
     port: s.port ?? null,
+    pathRegex: s.pathRegex || '.*',
     pathRe: new RegExp(s.pathRegex || '.*'),
   }));
 
@@ -179,9 +180,17 @@ export function loadProfile(file) {
   return profile;
 }
 
+// Host patterns: exact, or a wildcard "*.example.com" / ".example.com" that also matches the apex.
+function hostMatch(pattern, h) {
+  if (!pattern) return false;
+  if (pattern === h) return true;
+  const base = pattern.startsWith('*.') ? pattern.slice(2) : pattern.startsWith('.') ? pattern.slice(1) : null;
+  return base != null && (h === base || h.endsWith('.' + base));
+}
+
 export function inScope(profile, host, port, pathname) {
   const h = String(host || '').toLowerCase();
-  return profile.scope.some((s) => s.host === h && (s.port == null || s.port === port) && s.pathRe.test(pathname));
+  return profile.scope.some((s) => hostMatch(s.host, h) && (s.port == null || s.port === port) && s.pathRe.test(pathname));
 }
 
 /** Check exported plaintext/ciphertext pairs against the config. Returns [{cipher, ok, error?}]. */

@@ -368,3 +368,23 @@ test('binary body: bodyEncoding echoes on encrypt, drops on decrypt, in:body rou
   assert.equal(dec.request.body, 'hello');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('scope host wildcard *.example.test matches subdomains and apex, not others', () => {
+  const cfg = {
+    schemaVersion: 1, profile: 'wild',
+    scope: [{ host: '*.example.test', pathRegex: '.*' }],
+    keys: {}, ciphers: {}, apply: { request: [], response: [] }, integrity: [],
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-wild-'));
+  const file = path.join(dir, 'c.json');
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const eng = createEngine();
+  assert.equal(eng.handle({ op: 'load', files: [file] }).results[0].error, undefined);
+  const matched = (host) => eng.handle({ op: 'decryptRequest', host, port: 443, request: { headers: [], body: '{}', path: '/x' } }).matched;
+  assert.equal(matched('api.example.test'), 'wild');
+  assert.equal(matched('example.test'), 'wild');
+  assert.equal(matched('a.b.example.test'), 'wild');
+  assert.equal(matched('evil.test'), null);
+  assert.equal(matched('notexample.test'), null);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
