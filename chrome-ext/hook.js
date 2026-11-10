@@ -46,10 +46,31 @@
     }
     return null;
   };
+  // ---- hook hiding (R4) --------------------------------------------------
+  // A page that calls `fn.toString()` on a hooked API (or matches it against the
+  // "[native code]" pattern) sees the ORIGINAL function source, not our wrapper.
+  // Unmapped functions — everything the page itself defines — behave exactly as before.
+  const fnSource = new WeakMap(); // our wrapper -> the function whose source it should mirror
+  const hideFn = (wrapper, original) => {
+    if (typeof wrapper === 'function') { try { fnSource.set(wrapper, original); } catch (_) {} }
+    return wrapper;
+  };
+  (() => {
+    const nativeToString = Function.prototype.toString;
+    const patched = function toString() {
+      const orig = fnSource.get(this);
+      return nativeToString.call(orig !== undefined ? orig : this);
+    };
+    hideFn(patched, nativeToString); // the disguise disguises itself
+    try {
+      Object.defineProperty(Function.prototype, 'toString', { value: patched, writable: true, configurable: true });
+    } catch (_) { /* toString not configurable here; skip hiding */ }
+  })();
+
   const wrap = (obj, name, make) => {
     if (!obj || typeof obj[name] !== 'function') return;
     const original = obj[name];
-    obj[name] = make(original);
+    obj[name] = hideFn(make(original), original);
   };
 
   // ---- WebCrypto (SubtleCrypto) ------------------------------------------
@@ -171,6 +192,7 @@
         return r;
       };
       wrapped.__ct_fw = true;
+      hideFn(wrapped, f);
       modules[id] = wrapped;
     }
   };
@@ -188,6 +210,7 @@
         return fn.apply(this, items);
       };
       w.__ct_cb = true;
+      hideFn(w, fn);
       return w;
     };
     let current = arr.push; // native push now; webpack hasn't replaced it yet
