@@ -79,6 +79,11 @@ public final class SessionKeys {
         return out;
     }
 
+    /** The server rejected or never got this capture: forget it so the same value is pushed again next time. */
+    public void pushFailed(Capture c) {
+        lastPushed.remove(c.profile() + "\u0000" + c.keyName(), c.value());
+    }
+
     private static String valueFor(Rule r, String body, Function<String, String> header) {
         try {
             if (r.header() != null) return header == null ? null : header.apply(r.header());

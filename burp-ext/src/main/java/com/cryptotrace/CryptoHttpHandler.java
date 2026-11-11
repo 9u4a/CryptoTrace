@@ -31,7 +31,13 @@ public final class CryptoHttpHandler implements HttpHandler {
     private final Settings settings;
     private final ServerClient server;
     private final SessionKeys sessionKeys;
-    private final Map<Integer, HttpRequest> encryptedPlain = new ConcurrentHashMap<>();
+    /** Plain originals of requests we encrypted, until their response arrives. Entries whose response never
+     *  comes (connection error, dropped by Intruder/Scanner) are pruned so they can't pile up in the heap. */
+    private final Map<Integer, Pending> encryptedPlain = new ConcurrentHashMap<>();
+    private static final int PRUNE_ABOVE = 256;
+    private static final long PENDING_TTL_MS = 5 * 60_000L;
+
+    private record Pending(HttpRequest plain, long at) {}
 
     public CryptoHttpHandler(MontoyaApi api, Crypto crypto, Settings settings, ServerClient server, SessionKeys sessionKeys) {
         this.api = api;
@@ -48,7 +54,7 @@ public final class CryptoHttpHandler implements HttpHandler {
         try {
             Crypto.Result<HttpRequest> enc = crypto.encryptRequest(req);
             if (enc.matched() != null && enc.allOk()) {
-                encryptedPlain.put(req.messageId(), req);
+                remember(req);
                 return RequestToBeSentAction.continueWith(enc.message());
             }
             why = enc.matched() == null ? "no profile matches this host/path" : enc.errors();
@@ -63,7 +69,7 @@ public final class CryptoHttpHandler implements HttpHandler {
     @Override
     public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived res) {
         captureSessionKeys(res); // runs for every tool, Proxy included (the handshake is in the browser)
-        HttpRequest plain = encryptedPlain.remove(res.messageId());
+        Pending plain = encryptedPlain.remove(res.messageId());
         if (plain == null || !settings.decryptResponses() || res.toolSource().isFromTool(ToolType.PROXY)) {
             return ResponseReceivedAction.continueWith(res);
         }
@@ -75,6 +81,12 @@ public final class CryptoHttpHandler implements HttpHandler {
             api.logging().logToError("CryptoTrace response decrypt failed: " + e.getMessage());
             return ResponseReceivedAction.continueWith(res);
         }
+    }
+
+    private void remember(HttpRequestToBeSent req) {
+        long now = System.currentTimeMillis();
+        if (encryptedPlain.size() > PRUNE_ABOVE) encryptedPlain.values().removeIf(p -> now - p.at() > PENDING_TTL_MS);
+        encryptedPlain.put(req.messageId(), new Pending(req, now));
     }
 
     /** Extract any configured session keys from this response and push them to the server. */
@@ -96,6 +108,7 @@ public final class CryptoHttpHandler implements HttpHandler {
                 server.call("key", args);
                 api.logging().logToOutput("CryptoTrace captured session key " + c.profile() + "." + c.keyName());
             } catch (ServerClient.ServerException e) {
+                sessionKeys.pushFailed(c); // retry this value on the next matching response
                 api.logging().logToError("CryptoTrace session-key update failed: " + e.getMessage());
             }
         }

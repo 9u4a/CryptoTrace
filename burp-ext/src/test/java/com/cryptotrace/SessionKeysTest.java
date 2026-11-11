@@ -37,6 +37,17 @@ class SessionKeysTest {
     }
 
     @Test
+    void failedPushIsRetriedOnNextResponse() {
+        SessionKeys sk = new SessionKeys();
+        sk.setRules(loadResult("\"captures\":[{\"keyName\":\"sk\",\"jsonPath\":\"$.key\"}]"));
+        String body = "{\"key\":\"K1\"}";
+        List<SessionKeys.Capture> first = sk.extract("https://api.test/x", body, n -> null);
+        sk.pushFailed(first.get(0));
+        assertEquals("K1", sk.extract("https://api.test/x", body, n -> null).get(0).value());
+        assertTrue(sk.extract("https://api.test/x", body, n -> null).isEmpty());
+    }
+
+    @Test
     void urlRegexGatesCaptureAndMissingPathYieldsNothing() {
         SessionKeys sk = new SessionKeys();
         sk.setRules(loadResult("\"captures\":[{\"keyName\":\"sk\",\"urlRegex\":\"/auth/handshake\",\"jsonPath\":\"$.key\"}]"));
