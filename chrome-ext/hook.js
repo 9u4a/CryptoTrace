@@ -38,6 +38,8 @@
     }
     return null;
   };
+  // null/undefined → "": libraries encrypt them as the empty string, so the selftest vector must match.
+  const text = (v) => (v == null ? "" : String(v));
   const site = () => {
     const stack = (new Error().stack || '').split('\n').slice(2);
     for (const line of stack) {
@@ -138,7 +140,7 @@
       if (typeof C[h] !== 'function') continue;
       wrap(C, h, (orig) => function (message) {
         const out = orig.apply(this, arguments);
-        send({ lib: 'cryptojs', op: 'hash', alg: { name: h }, input: { encoding: 'utf8', value: String(message) }, output: { encoding: 'hex', value: String(out) }, site: site() });
+        send({ lib: 'cryptojs', op: 'hash', alg: { name: h }, input: { encoding: 'utf8', value: text(message) }, output: { encoding: 'hex', value: text(out) }, site: site() });
         return out;
       });
     }
@@ -146,7 +148,7 @@
       if (typeof C[h] !== 'function') continue;
       wrap(C, h, (orig) => function (message, key) {
         const out = orig.apply(this, arguments);
-        send({ lib: 'cryptojs', op: 'hmac', alg: { name: h.replace('Hmac', '') }, key: { encoding: 'cryptojs', value: String(key) }, input: { encoding: 'utf8', value: String(message) }, output: { encoding: 'hex', value: String(out) }, site: site() });
+        send({ lib: 'cryptojs', op: 'hmac', alg: { name: h.replace('Hmac', '') }, key: { encoding: 'cryptojs', value: text(key) }, input: { encoding: 'utf8', value: text(message) }, output: { encoding: 'hex', value: text(out) }, site: site() });
         return out;
       });
     }
@@ -155,17 +157,17 @@
       if (!algo || typeof algo.encrypt !== 'function') continue;
       wrap(algo, 'encrypt', (orig) => function (message, key, cfg) {
         const out = orig.apply(this, arguments);
-        send({ lib: 'cryptojs', op: 'encrypt', alg: { name: algName }, key: { encoding: 'cryptojs', value: String(key) },
-          iv: cfg && cfg.iv ? { encoding: 'cryptojs', value: String(cfg.iv) } : null,
+        send({ lib: 'cryptojs', op: 'encrypt', alg: { name: algName }, key: { encoding: 'cryptojs', value: text(key) },
+          iv: cfg && cfg.iv ? { encoding: 'cryptojs', value: text(cfg.iv) } : null,
           mode: cfg && cfg.mode && cfg.mode.name, padding: cfg && cfg.padding && cfg.padding.name,
-          input: { encoding: 'utf8', value: String(message) }, output: { encoding: 'cryptojs', value: String(out) }, site: site() });
+          input: { encoding: 'utf8', value: text(message) }, output: { encoding: 'cryptojs', value: text(out) }, site: site() });
         return out;
       });
       wrap(algo, 'decrypt', (orig) => function (ciphertext, key, cfg) {
         const out = orig.apply(this, arguments);
-        send({ lib: 'cryptojs', op: 'decrypt', alg: { name: algName }, key: { encoding: 'cryptojs', value: String(key) },
-          iv: cfg && cfg.iv ? { encoding: 'cryptojs', value: String(cfg.iv) } : null,
-          input: { encoding: 'cryptojs', value: String(ciphertext) }, output: { encoding: 'utf8', value: String(out) }, site: site() });
+        send({ lib: 'cryptojs', op: 'decrypt', alg: { name: algName }, key: { encoding: 'cryptojs', value: text(key) },
+          iv: cfg && cfg.iv ? { encoding: 'cryptojs', value: text(cfg.iv) } : null,
+          input: { encoding: 'cryptojs', value: text(ciphertext) }, output: { encoding: 'utf8', value: text(out) }, site: site() });
         return out;
       });
     }
@@ -176,14 +178,14 @@
     S.__ct_wrapped = true;
     wrap(S, 'encrypt', (orig) => function (password, plaintext) {
       const out = orig.apply(this, arguments);
-      send({ lib: 'sjcl', op: 'encrypt', alg: { name: 'AES' }, key: { encoding: 'utf8', value: String(password) },
-        input: { encoding: 'utf8', value: String(plaintext) }, output: { encoding: 'utf8', value: String(out) }, site: site() });
+      send({ lib: 'sjcl', op: 'encrypt', alg: { name: 'AES' }, key: { encoding: 'utf8', value: text(password) },
+        input: { encoding: 'utf8', value: text(plaintext) }, output: { encoding: 'utf8', value: text(out) }, site: site() });
       return out;
     });
     wrap(S, 'decrypt', (orig) => function (password, ciphertext) {
       const out = orig.apply(this, arguments);
-      send({ lib: 'sjcl', op: 'decrypt', alg: { name: 'AES' }, key: { encoding: 'utf8', value: String(password) },
-        input: { encoding: 'utf8', value: String(ciphertext) }, output: { encoding: 'utf8', value: String(out) }, site: site() });
+      send({ lib: 'sjcl', op: 'decrypt', alg: { name: 'AES' }, key: { encoding: 'utf8', value: text(password) },
+        input: { encoding: 'utf8', value: text(ciphertext) }, output: { encoding: 'utf8', value: text(out) }, site: site() });
       return out;
     });
   };
@@ -316,8 +318,8 @@
     for (const op of ['encrypt', 'decrypt']) {
       wrap(proto, op, (orig) => function (str) {
         const out = orig.apply(this, arguments);
-        send({ lib: 'jsencrypt', op, alg: { name: 'RSA' }, input: { encoding: 'utf8', value: String(str) },
-          output: out ? { encoding: 'utf8', value: String(out) } : null, site: site() });
+        send({ lib: 'jsencrypt', op, alg: { name: 'RSA' }, input: { encoding: 'utf8', value: text(str) },
+          output: out ? { encoding: 'utf8', value: text(out) } : null, site: site() });
         return out;
       });
     }
