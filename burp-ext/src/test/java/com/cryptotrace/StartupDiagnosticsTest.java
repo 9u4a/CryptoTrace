@@ -24,7 +24,7 @@ class StartupDiagnosticsTest {
     @Test
     void missingConfigsAreSeparatedFromExistingOnes() {
         String ok = ROOT.resolve("samples/configs/scenario-a.json").toString();
-        assertEquals(List.of("C:\gone\config.json"), SettingsTab.missingConfigs(List.of(ok, "C:\gone\config.json")));
+        assertEquals(List.of("C:/gone/config.json"), SettingsTab.missingConfigs(List.of(ok, "C:/gone/config.json")));
     }
 
     @Test
