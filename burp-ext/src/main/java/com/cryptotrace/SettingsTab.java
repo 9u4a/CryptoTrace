@@ -250,6 +250,14 @@ public final class SettingsTab {
     /** Persist the form, (re)start the server process and load configs. Runs off the EDT. */
     public synchronized boolean startServer() {
         List<String> files = new ArrayList<>(Collections.list(configs.elements()));
+        // A config file that no longer exists (moved / deleted) must not block loading the others:
+        // drop it from the list with a warning instead of failing the whole start.
+        List<String> missing = missingConfigs(files);
+        if (!missing.isEmpty()) {
+            files.removeAll(missing);
+            for (String m : missing) append("WARN config not found, removed from the list: " + m);
+            SwingUtilities.invokeLater(() -> missing.forEach(configs::removeElement));
+        }
         String l = Settings.unquote(launcher.getText());
         String s = Settings.unquote(script.getText());
         if (l.toLowerCase().matches(".*\\.(mjs|js)$")) { // script pasted into the launcher field
@@ -319,6 +327,14 @@ public final class SettingsTab {
             setStatus(false, "not running: " + e.getMessage());
             return false;
         }
+    }
+
+    static List<String> missingConfigs(List<String> files) {
+        List<String> out = new ArrayList<>();
+        for (String f : files) {
+            if (!java.nio.file.Files.isRegularFile(java.nio.file.Path.of(f))) out.add(f);
+        }
+        return out;
     }
 
     /** Returns a human-readable problem, or null if the launch looks sane. */

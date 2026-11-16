@@ -22,6 +22,12 @@ class StartupDiagnosticsTest {
     }
 
     @Test
+    void missingConfigsAreSeparatedFromExistingOnes() {
+        String ok = ROOT.resolve("samples/configs/scenario-a.json").toString();
+        assertEquals(List.of("C:\gone\config.json"), SettingsTab.missingConfigs(List.of(ok, "C:\gone\config.json")));
+    }
+
+    @Test
     void preflightCatchesEmptyOrMissingScriptAndConfigs() {
         assertTrue(SettingsTab.preflight("node", "", List.of()).contains("empty"));
         assertTrue(SettingsTab.preflight("C:\\nodejs\\node.exe", "C:\\nope\\main.mjs", List.of()).contains("not found"));
