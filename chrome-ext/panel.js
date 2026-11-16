@@ -169,18 +169,24 @@ function bestMatch(value, candidates, key) {
 
 // A request transport record: find where recent cipher OUTPUTS (ciphertext) are placed -> apply.request.
 // A response transport record: find where recent DECRYPT INPUTS (ciphertext) sit -> apply.response.
+// Request path of a transport record (relative or absolute URL), used to pin rules per endpoint.
+function pathOf(url) {
+  try { return new URL(url, 'http://x').pathname; } catch (_) { return ''; }
+}
+
 function correlate(t) {
   if (t.op === 'response') return correlateResponse(t);
   const outs = records.filter((r) => r.output && r.output.value && r.lib !== 'transport').slice(-80);
   const find = (value) => bestMatch(value, outs, 'output');
+  const at = pathOf(t.url);
   const b = t.body || {};
   if (b.kind === 'json' && Array.isArray(b.fields)) {
-    for (const f of b.fields) { const hit = find(f.value); if (hit) hit.apply = { in: 'json', path: f.path }; }
+    for (const f of b.fields) { const hit = find(f.value); if (hit) hit.apply = { in: 'json', path: f.path, at }; }
   } else if (b.kind === 'text' && b.sample) {
-    const hit = find(b.sample); if (hit) hit.apply = { in: 'body' };
+    const hit = find(b.sample); if (hit) hit.apply = { in: 'body', at };
   }
-  for (const [name, value] of t.headers || []) { const hit = find(value); if (hit) hit.apply = { in: 'header', name }; }
-  for (const [name, value] of t.query || []) { const hit = find(value); if (hit) hit.apply = { in: 'query', name }; }
+  for (const [name, value] of t.headers || []) { const hit = find(value); if (hit) hit.apply = { in: 'header', name, at }; }
+  for (const [name, value] of t.query || []) { const hit = find(value); if (hit) hit.apply = { in: 'query', name, at }; }
 }
 
 function correlateResponse(t) {
@@ -188,9 +194,9 @@ function correlateResponse(t) {
   const find = (value) => bestMatch(value, decs, 'input');
   const b = t.body || {};
   if (b.kind === 'json' && Array.isArray(b.fields)) {
-    for (const f of b.fields) { const hit = find(f.value); if (hit) hit.applyResponse = { in: 'json', path: f.path }; }
+    for (const f of b.fields) { const hit = find(f.value); if (hit) hit.applyResponse = { in: 'json', path: f.path, at: pathOf(t.url) }; }
   } else if (b.kind === 'text' && b.sample) {
-    const hit = find(b.sample); if (hit) hit.applyResponse = { in: 'body' };
+    const hit = find(b.sample); if (hit) hit.applyResponse = { in: 'body', at: pathOf(t.url) };
   }
 }
 

@@ -92,15 +92,18 @@ const unembed = (v) => (typeof v === 'string' ? v : JSON.stringify(v));
  * direction: 'decrypt' | 'encrypt'. Returns { message, applied: [{in, where, ok, error?}] }.
  * Never throws for a single location; failures are reported per rule and the value is left as-is.
  */
-export function transform(profile, rules, msg, direction, integrity = []) {
+export function transform(profile, rules, msg, direction, integrity = [], requestPath = null) {
   const headers = msg.headers.map(([n, v]) => [n, v]);
   let body = msg.body ?? '';
   let [pathname, qs] = splitPath(msg.path);
+  // Path a rule's pathRegex is tested against: the request's own path, or the one passed for a response.
+  const rulePath = requestPath != null ? splitPath(requestPath)[0] : pathname;
   const applied = [];
   let json; // parsed lazily, shared by all json rules
   const run = (cipher, v) => (direction === 'decrypt' ? cipher.decrypt(v) : cipher.encrypt(v));
 
   for (const r of rules) {
+    if (r.pathRe && !r.pathRe.test(rulePath || '')) continue;
     const cipher = profile.ciphers[r.cipher];
     const where = r.in === 'json' ? r.path : r.name || 'body';
     try {

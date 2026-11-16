@@ -73,6 +73,13 @@
     } catch (_) { return ''; }
   }
 
+  // /api/users/123/profile -> ^/api/users/[^/]+/profile$ (IDs, UUIDs and long hex become one segment).
+  function pathRegexFor(p) {
+    const seg = (s) => (/^\d+$/.test(s) || /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(s) || /^[0-9a-f]{16,}$/i.test(s))
+      ? '[^/]+' : s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return '^' + String(p).split('/').map(seg).join('/') + '$';
+  }
+
   window.buildConfig = function buildConfig(records) {
     const cfg = {
       schemaVersion: 1,
@@ -145,9 +152,11 @@
           cfg.ciphers[id] = spec;
         }
       }
-      // apply rules from correlated transport locations (request and/or response side)
-      if (locKey && !ruleByLoc.has(locKey)) { cfg.apply.request.push({ ...r.apply, cipher: id }); ruleByLoc.set(locKey, id); }
-      if (locKeyResp && !ruleByLocResp.has(locKeyResp)) { cfg.apply.response.push({ ...r.applyResponse, cipher: id }); ruleByLocResp.set(locKeyResp, id); }
+      // apply rules from correlated transport locations (request and/or response side); `at` (the captured
+      // request path) is kept aside and only becomes a pathRegex when the direction needs it (see below)
+      const rule = (a) => { const { at, ...rest } = a; const out = { ...rest, cipher: id }; Object.defineProperty(out, '_at', { value: at, enumerable: false }); return out; };
+      if (locKey && !ruleByLoc.has(locKey)) { cfg.apply.request.push(rule(r.apply)); ruleByLoc.set(locKey, id); }
+      if (locKeyResp && !ruleByLocResp.has(locKeyResp)) { cfg.apply.response.push(rule(r.applyResponse)); ruleByLocResp.set(locKeyResp, id); }
       // selftest vector when we have both plaintext and ciphertext
       if (r.op === 'encrypt' && r.input && r.output && r.input.encoding === 'utf8') {
         cfg.selftest.push({ cipher: id, plain: r.input.value, ciphertext: r.output.value });
@@ -173,6 +182,17 @@
       }
       rule._note = 'DRAFT: set "input" to the real template. Captured input was: ' + JSON.stringify(String((r.input && r.input.value) || '').slice(0, 120));
       cfg.integrity.push(rule);
+    }
+
+    // A whole-body rule and JSON/form-field rules in one direction rewrite the same body. When they came from
+    // different endpoints, pin each rule to its captured path so the server applies only the right one.
+    for (const side of ['request', 'response']) {
+      const rules = cfg.apply[side];
+      const mixed = rules.some((x) => x.in === 'body') && rules.some((x) => x.in === 'json' || x.in === 'form');
+      if (!mixed) continue;
+      let pinned = 0;
+      for (const x of rules) if (x._at) { x.pathRegex = pathRegexFor(x._at); pinned++; }
+      if (pinned) cfg._notes.push(`apply.${side}: whole-body and field rules came from different endpoints -- each rule is pinned to its captured path (pathRegex); widen it if more endpoints share the scheme`);
     }
 
     cfg.scope = [...hosts].filter(Boolean).map((s) => {

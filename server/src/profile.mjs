@@ -102,7 +102,13 @@ function validateRules(file, rules = [], ciphers) {
     if (!LOCATIONS.includes(r.in)) fail(file, `apply rule #${i}: "in" must be one of ${LOCATIONS.join('/')}`);
     if (!(r.cipher in ciphers)) fail(file, `apply rule #${i}: unknown cipher "${r.cipher}"`);
     if ((r.in === 'header' || r.in === 'query' || r.in === 'form' || r.in === 'multipart') && !r.name) fail(file, `apply rule #${i}: needs "name"`);
-    return { ...r, parts: r.in === 'json' ? parsePath(r.path) : null };
+    // Optional pathRegex (0.3.0): the rule only applies to requests whose path matches -- lets one profile
+    // hold a whole-body endpoint and a JSON-field endpoint on the same host without clobbering.
+    let pathRe = null;
+    if (r.pathRegex != null) {
+      try { pathRe = new RegExp(r.pathRegex); } catch (e) { fail(file, `apply rule #${i}: bad pathRegex: ${e.message}`); }
+    }
+    return { ...r, parts: r.in === 'json' ? parsePath(r.path) : null, pathRe };
   });
 }
 
@@ -132,8 +138,12 @@ const BODY_PARSERS = new Set(['json', 'form', 'multipart']);
 function collectWarnings(request, response, integrity, integrityResponse) {
   const out = [];
   const check = (dir, rules) => {
-    const hasBody = rules.some((r) => r.in === 'body');
-    const parsers = [...new Set(rules.filter((r) => BODY_PARSERS.has(r.in)).map((r) => r.in))];
+    // Rules pinned to different pathRegex values target different endpoints, so they never meet.
+    const meet = (a, b) => !(a.pathRegex != null && b.pathRegex != null && a.pathRegex !== b.pathRegex);
+    const bodies = rules.filter((r) => r.in === 'body');
+    const parserRules = rules.filter((r) => BODY_PARSERS.has(r.in) && bodies.some((b) => meet(b, r)));
+    const hasBody = parserRules.length > 0;
+    const parsers = [...new Set(parserRules.map((r) => r.in))];
     if (hasBody && parsers.length) {
       out.push(`${dir}: an in:body rule and in:${parsers.join('/')} rule(s) both rewrite the body; they will clobber each other — keep one body strategy per direction`);
     }

@@ -65,14 +65,14 @@ export function createEngine() {
     decryptResponse({ host, port, path, response }) {
       const p = pick(host, port, path);
       if (!p) return noMatch('response', response);
-      const { message, applied } = transform(p, p.response, response, 'decrypt');
+      const { message, applied } = transform(p, p.response, response, 'decrypt', [], path);
       return { matched: p.name, response: message, applied };
     },
 
     encryptResponse({ host, port, path, response }) {
       const p = pick(host, port, path);
       if (!p) return noMatch('response', response);
-      const { message, applied } = transform(p, p.response, response, 'encrypt', p.integrityResponse);
+      const { message, applied } = transform(p, p.response, response, 'encrypt', p.integrityResponse, path);
       return { matched: p.name, response: message, applied };
     },
 

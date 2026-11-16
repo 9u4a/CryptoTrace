@@ -262,3 +262,39 @@ test('Send to Burp drops ciphers the capture could not complete, and the rest lo
   assert.ok(draft.ciphers.c4, 'the Export draft is left untouched');
   assert.equal(loadIntoEngine(cfg).error, undefined, 'the trimmed profile loads in the real server');
 });
+
+test('whole-body and JSON-field endpoints on one host get pinned paths, load without the clobber warning, and route correctly', () => {
+  const buildConfig = loadBuilder();
+  const keyHex = Buffer.from('ct-sample-aes-key-0123456789abcd', 'utf8').toString('hex');
+  const ivHex = Buffer.from('ct-sample-iv-016', 'utf8').toString('hex');
+  const loginPlain = '{"id":"alice","pw":"pw1234"}';
+  const loginCt = aesCbcEncrypt(loginPlain);
+  const profPlain = '{"name":"Alice"}';
+  const { iv, ct } = gcmEncrypt(C_KEY, profPlain, Buffer.alloc(12, 7));
+  const profWire = Buffer.concat([iv, ct]).toString('base64');
+  const records = [
+    { lib: 'cryptojs', op: 'encrypt', alg: { name: 'AES' }, padding: 'Pkcs7', key: { encoding: 'cryptojs', value: keyHex },
+      iv: { encoding: 'cryptojs', value: ivHex }, input: { encoding: 'utf8', value: loginPlain },
+      output: { encoding: 'cryptojs', value: loginCt }, apply: { in: 'json', path: '$.data', at: '/api/login' }, frame: 'http://127.0.0.1:8088/' },
+    { lib: 'webcrypto', op: 'encrypt', alg: { name: 'AES-GCM', iv: { encoding: 'base64', value: b64(iv) } },
+      key: { encoding: 'base64', value: b64(C_KEY) }, input: { encoding: 'utf8', value: profPlain },
+      output: { encoding: 'base64', value: profWire }, apply: { in: 'body', at: '/api/users/42/profile' }, frame: 'http://127.0.0.1:8088/' },
+  ];
+  const cfg = buildConfig(records);
+  assert.equal(JSON.stringify(cfg.apply.request.map((r) => r.pathRegex)), JSON.stringify(['^/api/login$', '^/api/users/[^/]+/profile$']));
+  assert.ok(!JSON.stringify(cfg).includes('"at"'), 'the captured path is not leaked as an unknown field');
+
+  const { cfg: written, dir } = write(cfg);
+  const eng = createEngine();
+  const res = eng.handle({ op: 'load', files: [written] }).results[0];
+  assert.equal(res.error, undefined, res.error);
+  assert.ok(!(res.warnings || []).some((w) => /clobber/.test(w)), JSON.stringify(res.warnings));
+  // the JSON rule touches only /api/login, the body rule only the profile endpoint
+  const login = eng.handle({ op: 'decryptRequest', host: '127.0.0.1', port: 8088,
+    request: { method: 'POST', path: '/api/login', headers: [], body: JSON.stringify({ data: loginCt }) } });
+  assert.equal(JSON.stringify(JSON.parse(login.request.body).data), loginPlain);   // decrypted JSON is embedded as an object
+  const prof = eng.handle({ op: 'decryptRequest', host: '127.0.0.1', port: 8088,
+    request: { method: 'POST', path: '/api/users/7/profile', headers: [], body: profWire } });
+  assert.equal(prof.request.body, profPlain);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
