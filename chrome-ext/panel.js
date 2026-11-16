@@ -333,16 +333,17 @@ el('autoSend').onchange = () => {
 };
 
 async function sendToBurp(manual) {
-  const cfg = buildConfig(records);
+  const { cfg, skipped } = loadableConfig(buildConfig(records));
+  const note = skipped.length ? ` · ${skipped.length}개 위치 제외(키 미포착: ${skipped.map((x) => x.split(':')[0]).join(', ')})` : '';
   if (!Object.keys(cfg.ciphers || {}).length) {
-    if (manual) setStatus('보낼 암호화 설정이 아직 없습니다 (Hook ON 후 암호화 동작을 실행하세요)', true);
+    if (manual) setStatus(skipped.length ? '보낼 수 있는 설정이 없습니다' + note : '보낼 암호화 설정이 아직 없습니다 (Hook ON 후 암호화 동작을 실행하세요)', true);
     return;
   }
   const json = JSON.stringify(cfg);
   if (!manual && json === lastSent) return;
   const r = await CryptoTraceBridge.send(fetch, burp, cfg);
   if (r.ok) lastSent = json;
-  setStatus(r.text, !r.ok);
+  setStatus(r.text + note, !r.ok);
 }
 
 el('sendBurp').onclick = () => sendToBurp(true);

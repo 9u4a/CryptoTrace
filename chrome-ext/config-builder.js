@@ -184,4 +184,33 @@
     if (!cfg.scope.length) cfg.scope.push({ host: '', pathRegex: '.*' });
     return cfg;
   };
+
+  /** For Send to Burp (0.3.0): the server rejects a whole profile when one cipher can't load, so drop the
+   * ciphers the capture couldn't complete -- no key (per-request / wrapped key), RSA without key material,
+   * custom-module placeholders -- with their apply rules and selftests. Export keeps the full draft. */
+  window.loadableConfig = function loadableConfig(cfg) {
+    const out = JSON.parse(JSON.stringify(cfg));
+    const skipped = [];
+    const why = {};
+    for (const [id, c] of Object.entries(out.ciphers)) {
+      let reason = null;
+      if (c.custom) reason = 'custom module not provided';
+      else if (c.alg === 'rsa' && !c.publicKey && !c.privateKey) reason = 'RSA key not captured';
+      else if (c.alg !== 'rsa' && !c.key && !c.custom) reason = 'key not captured (per-request or wrapped key)';
+      if (reason) { why[id] = reason; delete out.ciphers[id]; }
+    }
+    const where = (r) => (r.path || r.name || r.in);
+    for (const side of ['request', 'response']) {
+      out.apply[side] = out.apply[side].filter((r) => {
+        if (!why[r.cipher]) return true;
+        skipped.push(`${side} ${where(r)}: ${why[r.cipher]}`);
+        return false;
+      });
+    }
+    out.selftest = out.selftest.filter((t) => !why[t.cipher]);
+    if (skipped.length) {
+      out._notes = [...(out._notes || []), 'Skipped on Send to Burp (finish them from Export by hand):', ...skipped.map((x) => '- ' + x)];
+    }
+    return { cfg: out, skipped };
+  };
 })();

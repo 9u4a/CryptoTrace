@@ -236,3 +236,29 @@ function write(cfg) {
   fs.writeFileSync(file, JSON.stringify(cfg));
   return { cfg: file, dir };
 }
+
+test('Send to Burp drops ciphers the capture could not complete, and the rest loads', () => {
+  const sandbox = { window: {}, URL, Date };
+  vm.runInNewContext(fs.readFileSync(path.join(HERE, '../config-builder.js'), 'utf8'), sandbox);
+  const keyHex = Buffer.from(C_KEY).toString('hex');
+  // Shape of the sample page after A + B + C: B's per-request AES-GCM key and RSA key are not capturable.
+  const draft = {
+    schemaVersion: 1, profile: 'p', scope: [{ host: '127.0.0.1', pathRegex: '.*', port: 8088 }],
+    keys: { k1: { source: 'static', value: keyHex, encoding: 'hex' } },
+    ciphers: {
+      c1: { alg: 'aes-256-gcm', iv: { from: 'prefix', length: 12 }, tag: { length: 16 }, key: 'k1' },
+      c3: { alg: 'rsa', padding: 'oaep', oaepHash: 'sha1' },
+      c4: { alg: 'aes-256-gcm', iv: { from: 'prefix', length: 12 }, tag: { length: 16 } },
+    },
+    apply: { request: [{ in: 'body', cipher: 'c1' }, { in: 'json', path: '$.ek', cipher: 'c3' }, { in: 'json', path: '$.ct', cipher: 'c4' }],
+             response: [{ in: 'json', path: '$.ct', cipher: 'c4' }] },
+    integrity: [], selftest: [{ cipher: 'c4', plain: 'x', ciphertext: 'y' }],
+  };
+  const { cfg, skipped } = sandbox.window.loadableConfig(draft);
+  assert.deepEqual(Object.keys(cfg.ciphers), ['c1']);
+  assert.equal(skipped.length, 3);
+  assert.match(skipped[0], /\$\.ek: RSA key not captured/);
+  assert.equal(cfg.selftest.length, 0);
+  assert.ok(draft.ciphers.c4, 'the Export draft is left untouched');
+  assert.equal(loadIntoEngine(cfg).error, undefined, 'the trimmed profile loads in the real server');
+});
