@@ -35,11 +35,14 @@ Built in today: `json` / `body` / `header` / `query` / `form` / `multipart`. `mu
 **text** field (`boundaryOf`/`multipartGet`/`multipartSet`); binary file parts travel base64 and are out of
 scope. A binary **wire body** needs no new location — give the `in:body` cipher a text `outEncoding`
 (base64/hex) and Burp decodes it to raw bytes via the `bodyEncoding` transport flag.
+Any apply rule may carry an optional `pathRegex` (tested against the request path, also for its response)
+so one profile can hold different strategies for different endpoints on the same host.
 
 ## Config conflict warnings
 `profile.mjs collectWarnings` — non-fatal load-time smells surfaced in the `load` result's `warnings[]`
 (Burp logs them). Today it flags an `in:body` rule coexisting with `in:json`/`form`/`multipart` in one
-direction (they fight over the same body). Add a check here for any new footgun.
+direction (they fight over the same body), unless both carry different `pathRegex` values. Add a check here
+for any new footgun.
 
 ## Byte encoding
 `server/src/encoding.mjs` — add a case to `toBytesOne` / `fromBytesOne` and the name to `ENCODINGS`.
