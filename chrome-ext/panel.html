@@ -40,6 +40,10 @@
   .tag { display: inline-block; padding: 0 5px; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); }
   .apply { color: var(--on); }
   #empty { padding: 24px; color: var(--muted); }
+  #burpBar { background: var(--toolbar); border-bottom: 1px solid var(--border); padding: 6px 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  #burpBar[hidden] { display: none; }
+  input { background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
+  .hint { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -49,7 +53,16 @@
   <span class="sep"></span>
   <span id="count">0 calls</span>
   <button id="export">Export config.json</button>
+  <button id="sendBurp" title="Send the config straight to the CryptoTrace Burp extension">Send to Burp</button>
+  <button id="burpToggle" title="Burp connection settings">Burp ⚙</button>
   <span id="status"></span>
+</div>
+<div id="burpBar" hidden>
+  <label>Port <input id="burpPort" size="6" /></label>
+  <label>Token <input id="burpToken" type="password" size="34" placeholder="Burp &gt; CryptoTrace 탭에서 복사" /></label>
+  <label><input id="autoSend" type="checkbox" /> 자동 전송</label>
+  <button id="burpSave">Save &amp; test</button>
+  <span class="hint">처음 한 번만: Burp CryptoTrace 탭의 토큰을 붙여 넣으세요. 127.0.0.1로만 전송합니다.</span>
 </div>
 <div id="list">
   <div id="empty">Hook ON을 누르면 탭을 새로고침하고 암호화 호출을 기록합니다.</div>
@@ -62,6 +75,7 @@
   </table>
 </div>
 <script src="config-builder.js"></script>
+<script src="bridge-client.js"></script>
 <script src="panel.js"></script>
 </body>
 </html>

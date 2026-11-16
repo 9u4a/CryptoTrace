@@ -45,7 +45,7 @@ It contains only runtime files (no tests): manifest, html/js, icons.
 - **Permission justifications:**
   - `debugger` — inject the crypto hooks before page scripts run (including Web Workers and iframes) and open call sites in DevTools. No remote debugging.
   - `storage` — persist the extension's own settings only.
-  - Host permissions: none requested.
+  - `http://127.0.0.1/*` — Send to Burp: post the generated config to the CryptoTrace Burp extension running on the same machine (loopback only, pairing token). No remote hosts.
 - **Data usage:** check **does not collect or use** user data. No analytics/telemetry; all processing local.
 - **Privacy policy URL:** https://github.com/9u4a/CryptoTrace/blob/main/PRIVACY.md
 
@@ -55,5 +55,5 @@ It contains only runtime files (no tests): manifest, html/js, icons.
 - [ ] On a later version bump: re-run step 1 and upload the new zip; keep the listing text in sync.
 
 ## Notes
-- The extension declares no `host_permissions` and no broad content scripts, which keeps review simple.
+- The only host permission is loopback (`http://127.0.0.1/*`, for Send to Burp); no broad content scripts.
 - Keep the store description in sync with `README.md` and the manifest `description`.

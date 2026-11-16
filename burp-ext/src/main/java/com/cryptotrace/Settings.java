@@ -11,6 +11,9 @@ public final class Settings {
     private static final String SCRIPT = "cryptotrace.script";
     private static final String CONFIGS = "cryptotrace.configs";
     private static final String DECRYPT_RESPONSES = "cryptotrace.decryptResponses";
+    private static final String BRIDGE_ENABLED = "cryptotrace.bridge.enabled";
+    private static final String BRIDGE_PORT = "cryptotrace.bridge.port";
+    private static final String BRIDGE_TOKEN = "cryptotrace.bridge.token";
 
     private final Preferences prefs;
     private final String defaultScript;
@@ -88,5 +91,39 @@ public final class Settings {
 
     public void decryptResponses(boolean v) {
         prefs.setBoolean(DECRYPT_RESPONSES, v);
+    }
+
+    /** Browser bridge on 127.0.0.1 (receive configs from the Chrome extension). Default on. */
+    public boolean bridgeEnabled() {
+        Boolean v = prefs.getBoolean(BRIDGE_ENABLED);
+        return v == null || v;
+    }
+
+    public void bridgeEnabled(boolean v) {
+        prefs.setBoolean(BRIDGE_ENABLED, v);
+    }
+
+    public int bridgePort() {
+        Integer v = prefs.getInteger(BRIDGE_PORT);
+        return v == null || v < 1 || v > 65535 ? Bridge.DEFAULT_PORT : v;
+    }
+
+    public void bridgePort(int v) {
+        prefs.setInteger(BRIDGE_PORT, v);
+    }
+
+    /** Pairing token, generated once and kept until regenerated (so the browser needs it only once). */
+    public synchronized String bridgeToken() {
+        String v = prefs.getString(BRIDGE_TOKEN);
+        if (v == null || v.isBlank()) v = regenerateBridgeToken();
+        return v;
+    }
+
+    public synchronized String regenerateBridgeToken() {
+        byte[] b = new byte[24];
+        new java.security.SecureRandom().nextBytes(b);
+        String t = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+        prefs.setString(BRIDGE_TOKEN, t);
+        return t;
     }
 }

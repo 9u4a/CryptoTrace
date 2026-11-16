@@ -15,11 +15,12 @@ PC 안에서만 이루어지며 외부 통신이 없습니다. 대상 서버로 
 | 진단하며 겪은 문제 | 만든 기능 |
 |---|---|
 | 암호화된 요청·응답이라 Burp에서 내용을 볼 수 없음 | Burp **Decrypted** 탭에서 평문 확인·수정 |
-| 알고리즘·키·IV·암호화 필드를 JS에서 손으로 찾아야 함 | 브라우저 후킹으로 자동 수집 → 설정 파일 Export |
+| 알고리즘·키·IV·암호화 필드를 JS에서 손으로 찾아야 함 | 브라우저 후킹으로 자동 수집 → **Send to Burp**로 바로 적용 (또는 설정 파일 Export) |
 | Repeater·Intruder·Scanner 페이로드가 암호문에 들어가 무의미 | 평문에 페이로드 → 전송 직전 자동 재암호화 |
 
 **안전 설계**
 - **외부 통신 없음**: 크롬 확장 · 로컬 서버 · Burp 사이 통신은 모두 로컬에서만 이루어집니다. → [PRIVACY.md](PRIVACY.md)
+- **브리지 보호**: Send to Burp는 `127.0.0.1`로만 보내고, Burp는 페어링 토큰·Host·확장 Origin이 모두 맞을 때만 받습니다. 커스텀 JS가 든 설정은 Burp에서 확인 후 로드합니다.
 - 암호화에 실패한 요청은 평문으로 보내지 않고 차단합니다.
 - 추출한 키·설정은 대상 유래 데이터이므로 저장소에 올리지 않습니다(`output/`).
 
@@ -29,11 +30,12 @@ PC 안에서만 이루어지며 외부 통신이 없습니다. 대상 서버로 
 
 | 구성 | 한 줄 설명 |
 |---|---|
-| **크롬 확장** (DevTools 패널) | `crypto.subtle`·CryptoJS·forge·JSEncrypt·sjcl 호출과 fetch/XHR 전송 지점을 후킹(Worker·iframe 포함), 호출 위치로 Sources 이동, 설정 Export |
+| **크롬 확장** (DevTools 패널) | `crypto.subtle`·CryptoJS·forge·JSEncrypt·sjcl 호출과 fetch/XHR 전송 지점을 후킹(Worker·iframe 포함), 호출 위치로 Sources 이동, **Send to Burp**(자동 전송 선택) · 설정 Export |
 | **로컬 서버** | AES(CBC/GCM)·RSA 암복호화, 커스텀 JS 모듈, 설정 로드 시 자가검증(왕복 테스트) |
 | **Burp — Decrypted 탭** | 요청·응답 평문 보기, 수정하면 자동 재암호화 |
 | **Burp — 자동 암호화** | `X-CT-Plain: 1` 요청을 전송 직전 암호화, Scanner 평문 삽입 지점, 도구 응답 복호화 분석 |
 | **Burp — Send to Repeater (Plain)** | 복호화된 요청을 평문 표식과 함께 Repeater로 전송 |
+| **Burp — 브라우저 브리지** | 크롬 확장이 보낸 설정을 받아 저장(`~/.cryptotrace/received/`)·로드·자가검증, 결과를 패널에 회신 |
 
 ## 사용법
 
@@ -41,9 +43,11 @@ PC 안에서만 이루어지며 외부 통신이 없습니다. 대상 서버로 
 
 1. **크롬 확장 설치**: [Releases](https://github.com/9u4a/CryptoTrace/releases)의 `cryptotrace-chrome-<version>.zip` 압축 해제 →
    `chrome://extensions` → 개발자 모드 → **압축해제된 확장 프로그램 로드**
-2. **추출**: 대상 페이지에서 DevTools → **CryptoTrace** 탭 → Hook ON → 기능 사용 → **Export**(config.json)
-3. **Burp 확장 로드**: `cryptotrace-<version>-all.jar`를 **Extensions → Add → Java**로 로드 → 설정 탭에서 config 선택
-4. **진단**: Proxy 기록의 **Decrypted** 탭에서 평문 확인, 우클릭 **Send to Repeater (Plain)**으로 변조·재전송
+2. **Burp 확장 로드**: `cryptotrace-<version>-all.jar`를 **Extensions → Add → Java**로 로드 → CryptoTrace 탭에서 서버 실행 파일 지정
+3. **처음 한 번 연결**: CryptoTrace 탭 **Browser bridge**의 **Copy token** → DevTools **CryptoTrace** 패널 **Burp ⚙**에 붙여 넣고 **Save & test**
+4. **추출·적용**: 대상 페이지에서 Hook ON → 기능 사용 → **Send to Burp** (자동 전송을 켜면 버튼도 필요 없음).
+   파일로 옮기려면 **Export**(config.json) → CryptoTrace 탭에서 **Add config…**
+5. **진단**: Proxy 기록의 **Decrypted** 탭에서 평문 확인, 우클릭 **Send to Repeater (Plain)**으로 변조·재전송
 
 ## 변경 이력
 

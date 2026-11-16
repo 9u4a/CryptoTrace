@@ -39,6 +39,13 @@ public final class SettingsTab {
     private final DefaultListModel<String> configs = new DefaultListModel<>();
     private final JLabel status = new JLabel();
     private final JTextArea log = new JTextArea(14, 80);
+    private final JCheckBox bridgeEnabled = new JCheckBox("Receive configs from the browser extension (127.0.0.1 only)");
+    private final JTextField bridgePort = new JTextField(6);
+    private final JTextField bridgeToken = new JTextField(34);
+    private final JLabel bridgeStatus = new JLabel();
+    private Bridge bridge;
+    /** Lines appended during a bridge-triggered load, returned to the browser (null otherwise). */
+    private volatile List<String> sink;
     private final JCheckBox decryptResponses = new JCheckBox("Decrypt responses of requests CryptoTrace encrypted (Repeater/Intruder/Scanner; never Proxy)");
 
     public SettingsTab(Settings settings, ServerClient server, SessionKeys sessionKeys) {
@@ -83,6 +90,7 @@ public final class SettingsTab {
         JButton start = new JButton("Start / Reload");
         start.addActionListener(e -> new Thread(this::startServer, "cryptotrace-start").start());
         form.add(row(start, status));
+        form.add(bridgePanel());
         form.add(row(decryptResponses));
         form.add(Box.createVerticalStrut(6));
         form.add(row(new JLabel("<html>Plaintext requests: add header <b>X-CT-Plain: 1</b> (or right-click → <b>Send to Repeater (Plain)</b>). "
@@ -93,6 +101,131 @@ public final class SettingsTab {
         root.add(form, BorderLayout.NORTH);
         root.add(new JScrollPane(log), BorderLayout.CENTER);
         setStatus(false, "stopped");
+    }
+
+    // ---- browser bridge (0.3.0) -------------------------------------------------------------
+
+    private JPanel bridgePanel() {
+        bridgeEnabled.setSelected(settings.bridgeEnabled());
+        bridgePort.setText(String.valueOf(settings.bridgePort()));
+        bridgeToken.setText(settings.bridgeToken());
+        bridgeToken.setEditable(false);
+        bridgeToken.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        bridgeEnabled.addActionListener(e -> {
+            settings.bridgeEnabled(bridgeEnabled.isSelected());
+            restartBridge();
+        });
+        JButton applyPort = new JButton("Apply");
+        applyPort.addActionListener(e -> {
+            try {
+                int port = Integer.parseInt(bridgePort.getText().trim());
+                if (port < 1 || port > 65535) throw new NumberFormatException();
+                settings.bridgePort(port);
+                restartBridge();
+            } catch (NumberFormatException ex) {
+                bridgePort.setText(String.valueOf(settings.bridgePort()));
+                append("ERROR bridge port must be 1-65535");
+            }
+        });
+        JButton copy = new JButton("Copy token");
+        copy.addActionListener(e -> java.awt.Toolkit.getDefaultToolkit().getSystemClipboard()
+                .setContents(new java.awt.datatransfer.StringSelection(settings.bridgeToken()), null));
+        JButton regen = new JButton("Regenerate");
+        regen.setToolTipText("Issue a new token; the browser extension must be given the new one");
+        regen.addActionListener(e -> {
+            bridgeToken.setText(settings.regenerateBridgeToken());
+            append("bridge token regenerated -- paste the new one into the browser extension");
+        });
+        JPanel p = new JPanel();
+        p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
+        p.setBorder(BorderFactory.createTitledBorder("Browser bridge (Send to Burp)"));
+        p.setAlignmentX(Component.LEFT_ALIGNMENT);
+        p.add(row(bridgeEnabled, new JLabel("Port:"), bridgePort, applyPort, bridgeStatus));
+        p.add(row(new JLabel("Token:"), bridgeToken, copy, regen));
+        p.add(row(new JLabel("Paste the token once into the CryptoTrace DevTools panel (Burp settings), then use Send to Burp.")));
+        return p;
+    }
+
+    /** Starts / stops the bridge to match the settings. Call once after construction, and on change. */
+    public void restartBridge() {
+        if (bridge == null) bridge = new Bridge(settings::bridgeToken, this::receive, this::append);
+        bridge.stop();
+        if (!settings.bridgeEnabled()) {
+            setBridgeStatus(false, "off");
+            return;
+        }
+        try {
+            bridge.start(settings.bridgePort());
+            setBridgeStatus(true, "listening on 127.0.0.1:" + bridge.port());
+        } catch (java.io.IOException e) {
+            append("ERROR bridge: cannot listen on 127.0.0.1:" + settings.bridgePort() + " (" + e.getMessage()
+                    + ") -- pick another port and set the same one in the browser extension");
+            setBridgeStatus(false, "port " + settings.bridgePort() + " unavailable");
+        }
+    }
+
+    public void stopBridge() {
+        if (bridge != null) bridge.stop();
+    }
+
+    /** A config from the browser: confirm custom code, save it, add it to the list, reload the server. */
+    private JsonObject receive(JsonObject cfg) throws Exception {
+        String name = Bridge.fileNameFor(cfg);
+        append("bridge: received config " + name);
+        if (Bridge.usesCustomCode(cfg)) {
+            boolean[] ok = {false};
+            SwingUtilities.invokeAndWait(() -> ok[0] = javax.swing.JOptionPane.showConfirmDialog(root,
+                    "The config from the browser (" + name + ") references custom JS modules.\n"
+                            + "Custom JS runs in the local server and node:vm is not a security boundary.\n"
+                            + "Load it only if you reviewed those modules. Load now?",
+                    "CryptoTrace -- custom code", javax.swing.JOptionPane.YES_NO_OPTION,
+                    javax.swing.JOptionPane.WARNING_MESSAGE) == javax.swing.JOptionPane.YES_OPTION);
+            if (!ok[0]) {
+                append("bridge: declined " + name + " (custom code)");
+                throw new Bridge.Refused(403, "declined in Burp (config uses custom JS)");
+            }
+        }
+        java.nio.file.Path dir = receivedDir();
+        java.nio.file.Files.createDirectories(dir);
+        java.nio.file.Path file = dir.resolve(name);
+        java.nio.file.Path tmp = dir.resolve(name + ".part");
+        java.nio.file.Files.writeString(tmp, ServerClient.GSON.toJson(cfg), java.nio.charset.StandardCharsets.UTF_8);
+        java.nio.file.Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        String path = file.toString();
+        SwingUtilities.invokeAndWait(() -> {
+            if (!configs.contains(path)) configs.addElement(path);
+        });
+        List<String> lines = Collections.synchronizedList(new ArrayList<>());
+        sink = lines;
+        boolean ok;
+        try {
+            ok = startServer();
+        } finally {
+            sink = null;
+        }
+        JsonObject o = new JsonObject();
+        o.addProperty("ok", ok);
+        o.addProperty("file", path);
+        o.addProperty("status", lastStatus);
+        com.google.gson.JsonArray arr = new com.google.gson.JsonArray();
+        synchronized (lines) {
+            for (String l : lines) arr.add(l);
+        }
+        o.add("log", arr);
+        return o;
+    }
+
+    /** Received configs live outside any repo: ~/.cryptotrace/received (they hold target keys). */
+    static java.nio.file.Path receivedDir() {
+        return java.nio.file.Path.of(System.getProperty("user.home"), ".cryptotrace", "received");
+    }
+
+    private void setBridgeStatus(boolean ok, String text) {
+        SwingUtilities.invokeLater(() -> {
+            bridgeStatus.setText((ok ? "● " : "○ ") + text);
+            bridgeStatus.setForeground(ok ? new java.awt.Color(0x18, 0x80, 0x38) : java.awt.Color.GRAY);
+        });
     }
 
     private static JPanel row(Component... cs) {
@@ -114,7 +247,7 @@ public final class SettingsTab {
     }
 
     /** Persist the form, (re)start the server process and load configs. Runs off the EDT. */
-    public void startServer() {
+    public synchronized boolean startServer() {
         List<String> files = new ArrayList<>(Collections.list(configs.elements()));
         String l = Settings.unquote(launcher.getText());
         String s = Settings.unquote(script.getText());
@@ -135,7 +268,7 @@ public final class SettingsTab {
         if (problem != null) {
             append("ERROR " + problem);
             setStatus(false, "not started: " + problem);
-            return;
+            return false;
         }
         try {
             append("starting: " + String.join(" ", ServerClient.command(settings.launcher(), settings.script())));
@@ -179,9 +312,11 @@ public final class SettingsTab {
                 }
             }
             setStatus(bad == 0, bad == 0 ? "running — " + files.size() + " config(s)" : "running with " + bad + " problem(s) — see log");
+            return bad == 0;
         } catch (Exception e) {
             append("ERROR " + e.getMessage());
             setStatus(false, "not running: " + e.getMessage());
+            return false;
         }
     }
 
@@ -200,6 +335,8 @@ public final class SettingsTab {
     }
 
     public void append(String line) {
+        List<String> s = sink;
+        if (s != null) s.add(line);
         String ts = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
         SwingUtilities.invokeLater(() -> {
             log.append("[" + ts + "] " + line + "\n");
@@ -207,7 +344,10 @@ public final class SettingsTab {
         });
     }
 
+    private volatile String lastStatus = "";
+
     private void setStatus(boolean ok, String text) {
+        lastStatus = text;
         SwingUtilities.invokeLater(() -> {
             status.setText((ok ? "● " : "○ ") + text);
             status.setForeground(ok ? new java.awt.Color(0x18, 0x80, 0x38) : java.awt.Color.GRAY);

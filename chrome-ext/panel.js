@@ -139,6 +139,7 @@ function addRecord(rec) {
   if (rec.lib === 'transport') correlate(rec);
   records.push(rec);
   renderRow(rec);
+  scheduleAutoSend();
   el('count').textContent = records.filter((r) => r.lib !== 'transport').length + ' calls';
 }
 
@@ -298,3 +299,57 @@ el('export').onclick = () => {
   URL.revokeObjectURL(url);
   setStatus('exported config.json (검토 후 키/인코딩 확인 필요)');
 };
+
+/* ------------------------- Send to Burp (0.3.0) ------------------------- */
+const burp = { port: CryptoTraceBridge.DEFAULT_PORT, token: '', autoSend: false };
+let lastSent = '';
+let autoTimer = null;
+
+chrome.storage.local.get(['burpPort', 'burpToken', 'autoSend'], (v) => {
+  burp.port = Number(v.burpPort) || CryptoTraceBridge.DEFAULT_PORT;
+  burp.token = v.burpToken || '';
+  burp.autoSend = !!v.autoSend;
+  el('burpPort').value = burp.port;
+  el('burpToken').value = burp.token;
+  el('autoSend').checked = burp.autoSend;
+  if (!burp.token) el('burpBar').hidden = false; // first run: show where to paste the token
+});
+
+el('burpToggle').onclick = () => { el('burpBar').hidden = !el('burpBar').hidden; };
+
+el('burpSave').onclick = async () => {
+  burp.port = Number(el('burpPort').value) || CryptoTraceBridge.DEFAULT_PORT;
+  burp.token = el('burpToken').value.trim();
+  burp.autoSend = el('autoSend').checked;
+  chrome.storage.local.set({ burpPort: burp.port, burpToken: burp.token, autoSend: burp.autoSend });
+  const r = await CryptoTraceBridge.ping(fetch, burp);
+  setStatus(r.text, !r.ok);
+  if (r.ok) el('burpBar').hidden = true;
+};
+
+el('autoSend').onchange = () => {
+  burp.autoSend = el('autoSend').checked;
+  chrome.storage.local.set({ autoSend: burp.autoSend });
+};
+
+async function sendToBurp(manual) {
+  const cfg = buildConfig(records);
+  if (!Object.keys(cfg.ciphers || {}).length) {
+    if (manual) setStatus('보낼 암호화 설정이 아직 없습니다 (Hook ON 후 암호화 동작을 실행하세요)', true);
+    return;
+  }
+  const json = JSON.stringify(cfg);
+  if (!manual && json === lastSent) return;
+  const r = await CryptoTraceBridge.send(fetch, burp, cfg);
+  if (r.ok) lastSent = json;
+  setStatus(r.text, !r.ok);
+}
+
+el('sendBurp').onclick = () => sendToBurp(true);
+
+// Auto-send: a few seconds after the last captured call, only when the config actually changed.
+function scheduleAutoSend() {
+  if (!burp.autoSend || !burp.token) return;
+  clearTimeout(autoTimer);
+  autoTimer = setTimeout(() => sendToBurp(false), 3000);
+}

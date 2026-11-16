@@ -25,7 +25,10 @@ before(() => {
   // Load each real bundle. UMD in this global scope assigns globalThis.<Lib>, firing the trap setter.
   vm.runInThisContext(read('crypto-js-4.2.0.js'), { filename: 'crypto-js.js' });
   vm.runInThisContext(read('sjcl-1.0.8.js'), { filename: 'sjcl.js' });
+  // The forge UMD bundle passes `window` as its root (the global object in a browser); shim it for forge only.
+  globalThis.window = globalThis;
   vm.runInThisContext(read('forge-1.3.1.min.js'), { filename: 'forge.js' });
+  delete globalThis.window;
 });
 
 const last = (lib, op) => [...records].reverse().find((r) => r.lib === lib && r.op === op);

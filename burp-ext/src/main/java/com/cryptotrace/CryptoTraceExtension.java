@@ -25,10 +25,15 @@ public final class CryptoTraceExtension implements BurpExtension {
         api.userInterface().registerContextMenuItemsProvider(new PlainContextMenu(api, crypto));
         api.http().registerHttpHandler(new CryptoHttpHandler(api, crypto, settings, server, sessionKeys));
         api.scanner().registerInsertionPointProvider(new PlainInsertionPoints(api, crypto));
-        api.extension().registerUnloadingHandler(server::close);
+        SettingsTab settingsTab = tab[0];
+        api.extension().registerUnloadingHandler(() -> {
+            settingsTab.stopBridge();
+            server.close();
+        });
+        settingsTab.restartBridge();   // browser bridge: Send to Burp from the DevTools panel
 
         // Auto-start when a launcher and configs were saved previously.
-        if (!settings.configs().isEmpty()) new Thread(tab[0]::startServer, "cryptotrace-autostart").start();
+        if (!settings.configs().isEmpty()) new Thread(() -> tab[0].startServer(), "cryptotrace-autostart").start();
         api.logging().logToOutput("CryptoTrace loaded. Configure the server in the CryptoTrace tab.");
     }
 }
