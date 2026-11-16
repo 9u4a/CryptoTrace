@@ -40,6 +40,18 @@
   };
   // null/undefined → "": libraries encrypt them as the empty string, so the selftest vector must match.
   const text = (v) => (v == null ? "" : String(v));
+  // A CryptoJS WordArray stringifies to hex. Record it as the UTF-8 text it holds (what the page sees),
+  // or as hex when the bytes aren't valid UTF-8 -- never hex labelled utf8 (breaks selftest vectors).
+  const waText = (C, v) => {
+    if (v && typeof v === 'object' && typeof v.sigBytes === 'number') {
+      try {
+        const u = v.toString(C.enc.Utf8);
+        if (u || v.sigBytes === 0) return { encoding: 'utf8', value: u };
+      } catch (_) { /* not UTF-8 */ }
+      return { encoding: 'hex', value: String(v) };
+    }
+    return { encoding: 'utf8', value: text(v) };
+  };
   const site = () => {
     const stack = (new Error().stack || '').split('\n').slice(2);
     for (const line of stack) {
@@ -160,14 +172,14 @@
         send({ lib: 'cryptojs', op: 'encrypt', alg: { name: algName }, key: { encoding: 'cryptojs', value: text(key) },
           iv: cfg && cfg.iv ? { encoding: 'cryptojs', value: text(cfg.iv) } : null,
           mode: cfg && cfg.mode && cfg.mode.name, padding: cfg && cfg.padding && cfg.padding.name,
-          input: { encoding: 'utf8', value: text(message) }, output: { encoding: 'cryptojs', value: text(out) }, site: site() });
+          input: waText(C, message), output: { encoding: 'cryptojs', value: text(out) }, site: site() });
         return out;
       });
       wrap(algo, 'decrypt', (orig) => function (ciphertext, key, cfg) {
         const out = orig.apply(this, arguments);
         send({ lib: 'cryptojs', op: 'decrypt', alg: { name: algName }, key: { encoding: 'cryptojs', value: text(key) },
           iv: cfg && cfg.iv ? { encoding: 'cryptojs', value: text(cfg.iv) } : null,
-          input: { encoding: 'cryptojs', value: text(ciphertext) }, output: { encoding: 'utf8', value: text(out) }, site: site() });
+          input: { encoding: 'cryptojs', value: text(ciphertext) }, output: waText(C, out), site: site() });
         return out;
       });
     }

@@ -43,7 +43,13 @@ test('crypto-js AES encrypt/decrypt is captured and still works', () => {
   assert.ok(enc, 'encrypt captured');
   assert.equal(enc.alg.name, 'AES');
   assert.equal(enc.input.value, 'secret message');
-  assert.ok(last('cryptojs', 'decrypt'), 'decrypt captured');
+  const dec = last('cryptojs', 'decrypt');
+  assert.ok(dec, 'decrypt captured');
+  // decrypt returns a WordArray: recorded as the UTF-8 text, not its hex string labelled utf8
+  assert.deepEqual({ ...dec.output }, { encoding: 'utf8', value: 'secret message' });
+  // a WordArray plaintext passed to encrypt is recorded the same way
+  C.AES.encrypt(C.enc.Utf8.parse('wa input'), 'pass phrase');
+  assert.deepEqual({ ...last('cryptojs', 'encrypt').input }, { encoding: 'utf8', value: 'wa input' });
 });
 
 test('sjcl encrypt/decrypt is captured and still works', () => {
