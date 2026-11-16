@@ -186,7 +186,33 @@
   };
   // sjcl: high-level sjcl.encrypt(password, plaintext) / sjcl.decrypt(password, ciphertext).
   const installSjcl = (S) => {
-    if (!S || S.__ct_wrapped || typeof S.encrypt !== 'function' || typeof S.decrypt !== 'function') return;
+    if (!S || typeof S !== 'object' || S.__ct_wrapped) return;
+    if (typeof S.encrypt !== 'function' || typeof S.decrypt !== 'function') {
+      // sjcl.js starts with `var sjcl = {cipher:{}, codec:{}, ...}` and attaches encrypt/decrypt later, so the
+      // global trap sees an empty skeleton. Trap the two properties and install once both are assigned.
+      if (S.__ct_pending) return;
+      S.__ct_pending = true;
+      const held = { encrypt: S.encrypt, decrypt: S.decrypt };
+      for (const name of ['encrypt', 'decrypt']) {
+        try {
+          Object.defineProperty(S, name, {
+            configurable: true,
+            enumerable: true,
+            get: () => held[name],
+            set: (v) => {
+              held[name] = v;
+              if (typeof held.encrypt !== 'function' || typeof held.decrypt !== 'function') return;
+              for (const n of ['encrypt', 'decrypt']) {
+                Object.defineProperty(S, n, { value: held[n], writable: true, configurable: true, enumerable: true });
+              }
+              delete S.__ct_pending;
+              try { installSjcl(S); } catch (_) {}
+            },
+          });
+        } catch (_) { /* frozen object: nothing to hook */ }
+      }
+      return;
+    }
     S.__ct_wrapped = true;
     wrap(S, 'encrypt', (orig) => function (password, plaintext) {
       const out = orig.apply(this, arguments);
