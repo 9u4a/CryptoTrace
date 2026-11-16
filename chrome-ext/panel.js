@@ -27,6 +27,7 @@ applyTheme();
 
 function setStatus(msg, isErr) {
   statusEl.textContent = msg || '';
+  statusEl.title = msg || '';
   statusEl.style.color = isErr ? '#d93025' : 'var(--muted)';
 }
 

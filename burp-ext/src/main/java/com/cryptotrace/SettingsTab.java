@@ -28,7 +28,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Suite tab: server launcher, config files, start/reload, status + log. */
+/** Suite tab: top bar (start, status, bridge), tabs (configs, bridge, server, options), log. */
 public final class SettingsTab {
     private final Settings settings;
     private final ServerClient server;
@@ -39,14 +39,14 @@ public final class SettingsTab {
     private final DefaultListModel<String> configs = new DefaultListModel<>();
     private final JLabel status = new JLabel();
     private final JTextArea log = new JTextArea(14, 80);
-    private final JCheckBox bridgeEnabled = new JCheckBox("Receive configs from the browser extension (127.0.0.1 only)");
+    private final JCheckBox bridgeEnabled = new JCheckBox();
     private final JTextField bridgePort = new JTextField(6);
     private final JTextField bridgeToken = new JTextField(34);
     private final JLabel bridgeStatus = new JLabel();
     private Bridge bridge;
     /** Lines appended during a bridge-triggered load, returned to the browser (null otherwise). */
     private volatile List<String> sink;
-    private final JCheckBox decryptResponses = new JCheckBox("Decrypt responses of requests CryptoTrace encrypted (Repeater/Intruder/Scanner; never Proxy)");
+    private final JCheckBox decryptResponses = new JCheckBox();
 
     public SettingsTab(Settings settings, ServerClient server, SessionKeys sessionKeys) {
         this.settings = settings;
@@ -59,63 +59,95 @@ public final class SettingsTab {
         return root;
     }
 
+    /**
+     * Layout (0.3.0): a fixed top bar (Start / Reload, server status, bridge status, Copy token), tabs for
+     * Configs / Browser bridge / Server / Options, and the log always visible below. Explanations live in
+     * tooltips. Burp's L&F doesn't render <html> in JLabel, so labels are plain text.
+     */
     private void build() {
-        root.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        JPanel form = new JPanel();
-        form.setLayout(new BoxLayout(form, BoxLayout.Y_AXIS));
-
+        root.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
         launcher.setText(settings.launcher());
         script.setText(settings.script());
         settings.configs().forEach(configs::addElement);
-        decryptResponses.setSelected(settings.decryptResponses());
-        decryptResponses.addActionListener(e -> settings.decryptResponses(decryptResponses.isSelected()));
-
-        form.add(row(new JLabel("Launcher (node or crypto-server.exe):"), launcher));
-        JButton browseScript = new JButton("Browse...");
-        browseScript.addActionListener(e -> choose(false).stream().findFirst().ifPresent(script::setText));
-        form.add(row(new JLabel("Server script (blank = auto-detect from jar location):"), script, browseScript));
-
-        JList<String> list = new JList<>(configs);
-        list.setVisibleRowCount(5);
-        JButton add = new JButton("Add config...");
-        add.addActionListener(e -> choose(true).forEach(configs::addElement));
-        JButton remove = new JButton("Remove");
-        remove.addActionListener(e -> list.getSelectedValuesList().forEach(configs::removeElement));
-        JPanel cfg = new JPanel(new BorderLayout(4, 4));
-        cfg.setBorder(BorderFactory.createTitledBorder("Config files (exported profiles)"));
-        cfg.add(new JScrollPane(list), BorderLayout.CENTER);
-        cfg.add(row(add, remove), BorderLayout.SOUTH);
-        form.add(cfg);
 
         JButton start = new JButton("Start / Reload");
+        start.setToolTipText("Save the settings, (re)start the local crypto server and load every config (with selftest)");
         start.addActionListener(e -> new Thread(this::startServer, "cryptotrace-start").start());
-        form.add(row(start, status));
-        form.add(bridgePanel());
-        form.add(row(decryptResponses));
-        form.add(Box.createVerticalStrut(6));
-        // Burp's L&F doesn't render <html> in JLabel (the tags show as text), so plain lines only.
-        form.add(row(new JLabel("Plaintext requests: add the header X-CT-Plain: 1, or right-click > Send to Repeater (Plain).")));
-        form.add(row(new JLabel("If encryption fails the request is blocked, never sent in plaintext.")));
+        JButton copyTop = new JButton("Copy token");
+        copyTop.setToolTipText("Pairing token for the DevTools panel (Burp settings) -- paste it there once");
+        copyTop.addActionListener(e -> copyToken());
+        JPanel bar = row(start, status, gap(18), new JLabel("Bridge:"), bridgeStatus, copyTop);
+
+        javax.swing.JTabbedPane tabs = new javax.swing.JTabbedPane();
+        tabs.addTab("Configs", configsTab());
+        tabs.addTab("Browser bridge", pinTop(bridgeTab()));
+        tabs.addTab("Server", pinTop(serverTab()));
+        tabs.addTab("Options", pinTop(optionsTab()));
 
         log.setEditable(false);
         log.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        root.add(form, BorderLayout.NORTH);
-        root.add(new JScrollPane(log), BorderLayout.CENTER);
+        JButton clearLog = new JButton("Clear log");
+        clearLog.addActionListener(e -> log.setText(""));
+        JPanel logPanel = new JPanel(new BorderLayout());
+        JLabel logTitle = new JLabel("Log");
+        logTitle.setFont(logTitle.getFont().deriveFont(Font.BOLD));
+        logPanel.add(row(logTitle, clearLog), BorderLayout.NORTH);
+        logPanel.add(new JScrollPane(log), BorderLayout.CENTER);
+
+        javax.swing.JSplitPane split = new javax.swing.JSplitPane(javax.swing.JSplitPane.VERTICAL_SPLIT, tabs, logPanel);
+        split.setResizeWeight(0.45);
+        split.setDividerLocation(260);
+        root.add(bar, BorderLayout.NORTH);
+        root.add(split, BorderLayout.CENTER);
         setStatus(false, "stopped");
     }
 
-    // ---- browser bridge (0.3.0) -------------------------------------------------------------
+    private JPanel configsTab() {
+        JList<String> list = new JList<>(configs);
+        list.setVisibleRowCount(6);
+        list.setCellRenderer(new javax.swing.DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(JList<?> l, Object v, int i, boolean sel, boolean focus) {
+                super.getListCellRendererComponent(l, v, i, sel, focus);
+                String path = String.valueOf(v);
+                java.nio.file.Path f = java.nio.file.Path.of(path);
+                boolean received = f.toAbsolutePath().startsWith(receivedDir());
+                setText(f.getFileName() + (received ? "    (from browser)" : "    " + f.getParent()));
+                setToolTipText(path);
+                return this;
+            }
+        });
+        JButton add = new JButton("Add config...");
+        add.setToolTipText("Add an exported config.json (Send to Burp adds received ones automatically)");
+        add.addActionListener(e -> choose(true).forEach(configs::addElement));
+        JButton remove = new JButton("Remove");
+        remove.addActionListener(e -> list.getSelectedValuesList().forEach(configs::removeElement));
+        JButton open = new JButton("Open received folder");
+        open.setToolTipText(receivedDir().toString());
+        open.addActionListener(e -> {
+            try {
+                java.nio.file.Files.createDirectories(receivedDir());
+                java.awt.Desktop.getDesktop().open(receivedDir().toFile());
+            } catch (Exception ex) {
+                append("ERROR cannot open " + receivedDir() + ": " + ex.getMessage());
+            }
+        });
+        JPanel p = new JPanel(new BorderLayout(4, 4));
+        p.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
+        p.add(new JScrollPane(list), BorderLayout.CENTER);
+        p.add(row(add, remove, gap(12), open, new JLabel("Changes apply on Start / Reload.")), BorderLayout.SOUTH);
+        return p;
+    }
 
-    private JPanel bridgePanel() {
+    private JPanel bridgeTab() {
+        bridgeEnabled.setText("Receive configs from the browser extension");
+        bridgeEnabled.setToolTipText("Listens on 127.0.0.1 only; a request needs the token, a local Host and the extension's origin");
         bridgeEnabled.setSelected(settings.bridgeEnabled());
-        bridgePort.setText(String.valueOf(settings.bridgePort()));
-        bridgeToken.setText(settings.bridgeToken());
-        bridgeToken.setEditable(false);
-        bridgeToken.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         bridgeEnabled.addActionListener(e -> {
             settings.bridgeEnabled(bridgeEnabled.isSelected());
             restartBridge();
         });
+        bridgePort.setText(String.valueOf(settings.bridgePort()));
         JButton applyPort = new JButton("Apply");
         applyPort.addActionListener(e -> {
             try {
@@ -128,23 +160,83 @@ public final class SettingsTab {
                 append("ERROR bridge port must be 1-65535");
             }
         });
-        JButton copy = new JButton("Copy token");
-        copy.addActionListener(e -> java.awt.Toolkit.getDefaultToolkit().getSystemClipboard()
-                .setContents(new java.awt.datatransfer.StringSelection(settings.bridgeToken()), null));
+        bridgeToken.setText(settings.bridgeToken());
+        bridgeToken.setEditable(false);
+        bridgeToken.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        JButton copy = new JButton("Copy");
+        copy.addActionListener(e -> copyToken());
         JButton regen = new JButton("Regenerate");
-        regen.setToolTipText("Issue a new token; the browser extension must be given the new one");
+        regen.setToolTipText("Issue a new token; paste the new one into the browser extension");
         regen.addActionListener(e -> {
             bridgeToken.setText(settings.regenerateBridgeToken());
             append("bridge token regenerated -- paste the new one into the browser extension");
         });
+        JPanel p = tabBody();
+        p.add(row(bridgeEnabled));
+        p.add(row(new JLabel("Port:"), bridgePort, applyPort, muted("Same port in the DevTools panel (default " + Bridge.DEFAULT_PORT + ")")));
+        p.add(row(new JLabel("Token:"), bridgeToken, copy, regen));
+        p.add(row(muted("Once: DevTools > CryptoTrace > Burp settings > paste token > Save & test. Then Send to Burp.")));
+        return p;
+    }
+
+    private JPanel serverTab() {
+        launcher.setToolTipText("node (or a full path to node.exe), or the packaged crypto-server.exe");
+        script.setToolTipText("server/src/main.mjs when launching through node; blank = auto-detect from the jar location; "
+                + "leave blank for crypto-server.exe");
+        JButton browseScript = new JButton("Browse...");
+        browseScript.addActionListener(e -> choose(false).stream().findFirst().ifPresent(script::setText));
+        JPanel p = tabBody();
+        p.add(row(fixed(new JLabel("Launcher:")), launcher));
+        p.add(row(fixed(new JLabel("Server script:")), script, browseScript));
+        p.add(row(muted("Saved and applied on Start / Reload.")));
+        return p;
+    }
+
+    private JPanel optionsTab() {
+        decryptResponses.setText("Decrypt responses in Repeater / Intruder / Scanner");
+        decryptResponses.setToolTipText("Only for requests CryptoTrace encrypted; never in Proxy");
+        decryptResponses.setSelected(settings.decryptResponses());
+        decryptResponses.addActionListener(e -> settings.decryptResponses(decryptResponses.isSelected()));
+        JPanel p = tabBody();
+        p.add(row(decryptResponses));
+        p.add(row(muted("Plaintext request: header X-CT-Plain: 1, or right-click > Send to Repeater (Plain). "
+                + "A request that fails to encrypt is blocked, never sent in plaintext.")));
+        return p;
+    }
+
+    private void copyToken() {
+        java.awt.Toolkit.getDefaultToolkit().getSystemClipboard()
+                .setContents(new java.awt.datatransfer.StringSelection(settings.bridgeToken()), null);
+        append("bridge token copied to the clipboard");
+    }
+
+    private static JPanel tabBody() {
         JPanel p = new JPanel();
         p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
-        p.setBorder(BorderFactory.createTitledBorder("Browser bridge (Send to Burp)"));
-        p.setAlignmentX(Component.LEFT_ALIGNMENT);
-        p.add(row(bridgeEnabled, new JLabel("Port:"), bridgePort, applyPort, bridgeStatus));
-        p.add(row(new JLabel("Token:"), bridgeToken, copy, regen));
-        p.add(row(new JLabel("Paste the token once into the CryptoTrace DevTools panel (Burp settings), then use Send to Burp.")));
+        p.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
         return p;
+    }
+
+    /** Keeps a tab's rows at their natural height at the top. */
+    private static JPanel pinTop(JPanel body) {
+        JPanel holder = new JPanel(new BorderLayout());
+        holder.add(body, BorderLayout.NORTH);
+        return holder;
+    }
+
+    private static JLabel muted(String text) {
+        JLabel l = new JLabel(text);
+        l.setForeground(java.awt.Color.GRAY);
+        return l;
+    }
+
+    private static JLabel fixed(JLabel l) {
+        l.setPreferredSize(new java.awt.Dimension(100, l.getPreferredSize().height));
+        return l;
+    }
+
+    private static Component gap(int w) {
+        return Box.createHorizontalStrut(w);
     }
 
     /** Starts / stops the bridge to match the settings. Call once after construction, and on change. */

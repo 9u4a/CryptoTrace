@@ -44,7 +44,7 @@ PC 안에서만 이루어지며 외부 통신이 없습니다. 대상 서버로 
 1. **크롬 확장 설치**: [Releases](https://github.com/9u4a/CryptoTrace/releases)의 `cryptotrace-chrome-<version>.zip` 압축 해제 →
    `chrome://extensions` → 개발자 모드 → **압축해제된 확장 프로그램 로드**
 2. **Burp 확장 로드**: `cryptotrace-<version>-all.jar`를 **Extensions → Add → Java**로 로드 → CryptoTrace 탭에서 서버 실행 파일 지정
-3. **처음 한 번 연결**: CryptoTrace 탭 **Browser bridge**의 **Copy token** → DevTools **CryptoTrace** 패널 **Burp ⚙**에 붙여 넣고 **Save & test**
+3. **처음 한 번 연결**: CryptoTrace 탭 상단 **Copy token** → DevTools **CryptoTrace** 패널 **Burp 설정**에 붙여 넣고 **Save & test**
 4. **추출·적용**: 대상 페이지에서 Hook ON → 기능 사용 → **Send to Burp** (자동 전송을 켜면 버튼도 필요 없음).
    파일로 옮기려면 **Export**(config.json) → CryptoTrace 탭에서 **Add config…**
 5. **진단**: Proxy 기록의 **Decrypted** 탭에서 평문 확인, 우클릭 **Send to Repeater (Plain)**으로 변조·재전송
