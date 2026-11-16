@@ -71,13 +71,13 @@ public final class SettingsTab {
         decryptResponses.addActionListener(e -> settings.decryptResponses(decryptResponses.isSelected()));
 
         form.add(row(new JLabel("Launcher (node or crypto-server.exe):"), launcher));
-        JButton browseScript = new JButton("Browse…");
+        JButton browseScript = new JButton("Browse...");
         browseScript.addActionListener(e -> choose(false).stream().findFirst().ifPresent(script::setText));
         form.add(row(new JLabel("Server script (blank = auto-detect from jar location):"), script, browseScript));
 
         JList<String> list = new JList<>(configs);
         list.setVisibleRowCount(5);
-        JButton add = new JButton("Add config…");
+        JButton add = new JButton("Add config...");
         add.addActionListener(e -> choose(true).forEach(configs::addElement));
         JButton remove = new JButton("Remove");
         remove.addActionListener(e -> list.getSelectedValuesList().forEach(configs::removeElement));
@@ -93,8 +93,9 @@ public final class SettingsTab {
         form.add(bridgePanel());
         form.add(row(decryptResponses));
         form.add(Box.createVerticalStrut(6));
-        form.add(row(new JLabel("<html>Plaintext requests: add header <b>X-CT-Plain: 1</b> (or right-click → <b>Send to Repeater (Plain)</b>). "
-                + "If encryption fails the request is blocked, never sent in plaintext.</html>")));
+        // Burp's L&F doesn't render <html> in JLabel (the tags show as text), so plain lines only.
+        form.add(row(new JLabel("Plaintext requests: add the header X-CT-Plain: 1, or right-click > Send to Repeater (Plain).")));
+        form.add(row(new JLabel("If encryption fails the request is blocked, never sent in plaintext.")));
 
         log.setEditable(false);
         log.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
@@ -223,7 +224,7 @@ public final class SettingsTab {
 
     private void setBridgeStatus(boolean ok, String text) {
         SwingUtilities.invokeLater(() -> {
-            bridgeStatus.setText((ok ? "● " : "○ ") + text);
+            bridgeStatus.setText((ok ? "[ON] " : "[OFF] ") + text);
             bridgeStatus.setForeground(ok ? new java.awt.Color(0x18, 0x80, 0x38) : java.awt.Color.GRAY);
         });
     }
@@ -286,7 +287,7 @@ public final class SettingsTab {
                     append("ERROR " + o.get("file").getAsString() + ": " + o.get("error").getAsString());
                     continue;
                 }
-                StringBuilder sb = new StringBuilder("loaded " + o.get("profile").getAsString() + " — selftest:");
+                StringBuilder sb = new StringBuilder("loaded " + o.get("profile").getAsString() + " - selftest:");
                 if (o.getAsJsonArray("selftest").isEmpty()) sb.append(" (no vectors)");
                 for (JsonElement t : o.getAsJsonArray("selftest")) {
                     JsonObject tt = t.getAsJsonObject();
@@ -311,7 +312,7 @@ public final class SettingsTab {
                     for (JsonElement w : o.getAsJsonArray("warnings")) append("  WARN " + w.getAsString());
                 }
             }
-            setStatus(bad == 0, bad == 0 ? "running — " + files.size() + " config(s)" : "running with " + bad + " problem(s) — see log");
+            setStatus(bad == 0, bad == 0 ? "running - " + files.size() + " config(s)" : "running with " + bad + " problem(s) - see log");
             return bad == 0;
         } catch (Exception e) {
             append("ERROR " + e.getMessage());
@@ -324,7 +325,7 @@ public final class SettingsTab {
     static String preflight(String launcher, String script, List<String> configs) {
         String exe = java.nio.file.Path.of(launcher).getFileName().toString().toLowerCase();
         boolean isNode = exe.equals("node") || exe.equals("node.exe");
-        if (isNode && script.isEmpty()) return "Server script is empty — set it to <repo>\\server\\src\\main.mjs";
+        if (isNode && script.isEmpty()) return "Server script is empty - set it to <repo>\\server\\src\\main.mjs";
         if (!script.isEmpty() && !java.nio.file.Files.isRegularFile(java.nio.file.Path.of(script))) {
             return "Server script not found: " + script;
         }
@@ -349,7 +350,7 @@ public final class SettingsTab {
     private void setStatus(boolean ok, String text) {
         lastStatus = text;
         SwingUtilities.invokeLater(() -> {
-            status.setText((ok ? "● " : "○ ") + text);
+            status.setText((ok ? "[ON] " : "[OFF] ") + text);
             status.setForeground(ok ? new java.awt.Color(0x18, 0x80, 0x38) : java.awt.Color.GRAY);
         });
     }

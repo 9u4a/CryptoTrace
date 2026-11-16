@@ -62,7 +62,7 @@ public final class CryptoHttpHandler implements HttpHandler {
             why = e.getMessage();
         }
         String note = "CryptoTrace BLOCKED (not sent): " + why;
-        api.logging().logToError(note + " — " + req.url());
+        api.logging().logToError(note + " - " + req.url());
         return RequestToBeSentAction.continueWith(req.withService(BLACKHOLE), req.annotations().withNotes(note));
     }
 
