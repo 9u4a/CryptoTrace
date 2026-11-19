@@ -201,10 +201,40 @@ function correlateResponse(t) {
 }
 
 /* ------------------------- rendering ------------------------- */
-function short(obj) {
+const CIPHER_OPS = new Set(['encrypt', 'decrypt']);
+let selected = null; // record shown in the detail pane
+
+function short(obj, max = 32) {
   if (!obj || obj.value == null) return '';
   const v = String(obj.value);
-  return v.length > 48 ? v.slice(0, 45) + '…' : v;
+  return v.length > max ? v.slice(0, max - 1) + '…' : v;
+}
+
+function algText(rec) {
+  return rec.alg ? (rec.alg.name || '') + (rec.mode ? '/' + rec.mode : '') : '';
+}
+
+function applyText(a) {
+  return a ? a.in + (a.path || a.name ? ' ' + (a.path || a.name) : '') : '';
+}
+
+// Request + response placement in one short cell: "req json $.data · res body".
+function applyCell(rec) {
+  const parts = [];
+  if (rec.apply) parts.push('req ' + applyText(rec.apply));
+  if (rec.applyResponse) parts.push('res ' + applyText(rec.applyResponse));
+  return parts.join(' · ');
+}
+
+function opBadge(op) {
+  const b = document.createElement('span');
+  b.className = 'op ' + (op === 'encrypt' ? 'op-encrypt' : op === 'decrypt' ? 'op-decrypt' : 'op-other');
+  b.textContent = op || '';
+  return b;
+}
+
+function isHidden(rec) {
+  return el('onlyCipher').checked && !CIPHER_OPS.has(rec.op);
 }
 
 function renderRow(rec) {
@@ -212,22 +242,25 @@ function renderRow(rec) {
   el('table').hidden = false;
   el('empty').hidden = true;
   const tr = document.createElement('tr');
-  const alg = rec.alg ? (rec.alg.name || '') + (rec.mode ? '/' + rec.mode : '') : '';
-  const cells = [
-    rec.n, rec.lib, rec.op, alg, short(rec.key), short(rec.iv), short(rec.input), short(rec.output),
-  ];
-  for (const c of cells) {
+  if (!CIPHER_OPS.has(rec.op)) tr.classList.add('aux');
+  const add = (content, cls) => {
     const td = document.createElement('td');
-    td.className = 'val';
-    td.textContent = c == null ? '' : String(c);
-    td.title = td.textContent;
+    if (cls) td.className = cls;
+    if (content instanceof Node) td.appendChild(content);
+    else td.textContent = content == null ? '' : String(content);
+    if (!(content instanceof Node)) td.title = td.textContent;
     tr.appendChild(td);
-  }
-  const applyTd = document.createElement('td');
-  applyTd.className = 'apply';
-  applyTd.textContent = rec.apply ? rec.apply.in + (rec.apply.path || rec.apply.name ? ' ' + (rec.apply.path || rec.apply.name) : '') : '';
-  tr.appendChild(applyTd);
-  rec._applyTd = applyTd;
+    return td;
+  };
+  add(rec.n);
+  add(rec.lib);
+  add(opBadge(rec.op));
+  add(algText(rec));
+  add(short(rec.key, 24), 'val');
+  add(short(rec.iv, 20), 'val');
+  add(short(rec.input), 'val');
+  add(short(rec.output), 'val');
+  rec._applyTd = add(applyCell(rec), 'apply');
 
   const siteTd = document.createElement('td');
   if (rec.site && rec.site.url) {
@@ -236,22 +269,92 @@ function renderRow(rec) {
     const file = rec.site.url.split('/').pop();
     a.textContent = file + ':' + rec.site.line;
     a.title = rec.site.url + ':' + rec.site.line + ':' + rec.site.col;
-    a.onclick = () => openInSources(rec.site.url, rec.site.line - 1, rec.site.col - 1);
+    a.onclick = (e) => { e.stopPropagation(); openInSources(rec.site.url, rec.site.line - 1, rec.site.col - 1); };
     siteTd.appendChild(a);
   }
   tr.appendChild(siteTd);
+  tr.hidden = isHidden(rec);
+  tr.onclick = () => select(rec);
+  rec._tr = tr;
   rowsEl.appendChild(tr);
+  // Follow the latest encrypt/decrypt until the user picks a row themselves.
+  if (CIPHER_OPS.has(rec.op) && (!selected || selected._auto)) select(rec, true);
 }
 
 // Re-paint apply cells (correlation may fill them after the row was drawn).
 function refreshApply() {
-  for (const r of records) {
-    if (r._applyTd) {
-      r._applyTd.textContent = r.apply ? r.apply.in + (r.apply.path || r.apply.name ? ' ' + (r.apply.path || r.apply.name) : '') : '';
-    }
-  }
+  for (const r of records) if (r._applyTd) r._applyTd.textContent = applyCell(r);
+  if (selected) renderDetail(selected);
 }
 setInterval(refreshApply, 1000);
+
+el('onlyCipher').onchange = () => {
+  for (const r of records) if (r._tr) r._tr.hidden = isHidden(r);
+};
+
+/* ------------------------- detail pane ------------------------- */
+function select(rec, auto = false) {
+  if (selected && selected._tr) selected._tr.classList.remove('sel');
+  selected = rec;
+  rec._auto = auto;
+  if (rec._tr) rec._tr.classList.add('sel');
+  el('detail').hidden = false;
+  renderDetail(rec);
+}
+
+// Plaintext that is JSON is shown pretty-printed; everything else verbatim.
+function pretty(v) {
+  const s = String(v);
+  if (!/^\s*[{[]/.test(s)) return s;
+  try { return JSON.stringify(JSON.parse(s), null, 2); } catch (_) { return s; }
+}
+
+let lastDetail = '';
+function renderDetail(rec) {
+  const isPlain = (side) => (rec.op === 'encrypt' && side === 'input') || (rec.op === 'decrypt' && side === 'output');
+  const rows = [
+    ['key', rec.key, 'secret'],
+    ['iv', rec.iv, 'secret'],
+    [rec.op === 'decrypt' ? 'input (암호문)' : rec.op === 'encrypt' ? 'input (평문)' : 'input', rec.input, isPlain('input') ? 'plain' : ''],
+    [rec.op === 'encrypt' ? 'output (암호문)' : rec.op === 'decrypt' ? 'output (평문)' : 'output', rec.output, isPlain('output') ? 'plain' : ''],
+    ['apply (req)', rec.apply ? { value: applyText(rec.apply) + (rec.apply.at ? '   @ ' + rec.apply.at : '') } : null, ''],
+    ['apply (res)', rec.applyResponse ? { value: applyText(rec.applyResponse) + (rec.applyResponse.at ? '   @ ' + rec.applyResponse.at : '') } : null, ''],
+    ['site', rec.site && rec.site.url ? { value: rec.site.url + ':' + rec.site.line + ':' + rec.site.col } : null, ''],
+  ];
+  if (rec.format) rows.splice(1, 0, ['format', { value: rec.format }, '']);
+  // Skip the DOM rebuild when nothing changed (refreshApply runs every second; keeps text selection alive).
+  const sig = rec.n + JSON.stringify(rows.map((r) => r[1] && r[1].value));
+  if (sig === lastDetail) return;
+  lastDetail = sig;
+
+  const head = el('dHead');
+  head.textContent = '';
+  const b = document.createElement('b');
+  b.textContent = '#' + rec.n;
+  head.append(b, opBadge(rec.op));
+  const meta = document.createElement('span');
+  meta.textContent = [rec.lib, algText(rec)].filter(Boolean).join(' · ');
+  head.appendChild(meta);
+
+  const body = el('dBody');
+  body.textContent = '';
+  for (const [label, obj, cls] of rows) {
+    if (!obj && (label === 'format' || label.startsWith('apply'))) continue;
+    const k = document.createElement('div');
+    k.className = 'k';
+    k.textContent = label;
+    if (obj && obj.encoding) {
+      const sm = document.createElement('small');
+      sm.textContent = obj.encoding;
+      k.appendChild(sm);
+    }
+    const v = document.createElement('pre');
+    const has = obj && obj.value != null && obj.value !== '';
+    v.className = 'v ' + (has ? cls : 'empty');
+    v.textContent = has ? (cls === 'plain' ? pretty(obj.value) : String(obj.value)) : '—';
+    body.append(k, v);
+  }
+}
 
 function openInSources(url, line0, col0) {
   try {
@@ -290,6 +393,9 @@ hookBtn.onclick = async () => {
 el('clear').onclick = () => {
   records.length = 0;
   rowsEl.innerHTML = '';
+  selected = null;
+  lastDetail = '';
+  el('detail').hidden = true;
   el('table').hidden = true;
   el('empty').hidden = false;
   el('count').textContent = '0 calls';

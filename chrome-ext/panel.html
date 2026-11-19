@@ -8,17 +8,20 @@
     --bg: #ffffff; --toolbar: #f3f3f3; --text: #202124; --muted: #5f6368;
     --border: #cacccd; --input-bg: #ffffff; --accent: #1a73e8; --btn-bg: #ffffff;
     --btn-hover: #e8eaed; --on: #188038; --off: #5f6368; --row-alt: #f8f9fa;
+    --sel: #d2e3fc; --enc: #b3261e; --enc-bg: #fce8e6; --dec: #137333; --dec-bg: #e6f4ea; --key: #a142f4;
   }
   body.theme-dark {
     --bg: #282828; --toolbar: #333333; --text: #e3e3e3; --muted: #9aa0a6;
     --border: #494c50; --input-bg: #1e1e1e; --accent: #8ab4f8; --btn-bg: #3c4043;
     --btn-hover: #4a4e52; --on: #81c995; --off: #9aa0a6; --row-alt: #2d2d2d;
+    --sel: #394457; --enc: #f28b82; --enc-bg: #4a2725; --dec: #81c995; --dec-bg: #24382b; --key: #d7aefb;
   }
   @media (prefers-color-scheme: dark) {
     body:not(.theme-light) {
       --bg: #282828; --toolbar: #333333; --text: #e3e3e3; --muted: #9aa0a6;
       --border: #494c50; --input-bg: #1e1e1e; --accent: #8ab4f8; --btn-bg: #3c4043;
       --btn-hover: #4a4e52; --on: #81c995; --off: #9aa0a6; --row-alt: #2d2d2d;
+    --sel: #394457; --enc: #f28b82; --enc-bg: #4a2725; --dec: #81c995; --dec-bg: #24382b; --key: #d7aefb;
     }
   }
   html, body { margin: 0; height: 100%; }
@@ -49,6 +52,29 @@
   #burpBar[hidden] { display: none; }
   input { background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
   .hint { color: var(--muted); }
+  /* selection + op badges */
+  tbody tr { cursor: pointer; }
+  tbody tr.sel td { background: var(--sel) !important; }
+  tbody tr.aux td { color: var(--muted); }
+  .op { display: inline-block; min-width: 54px; text-align: center; padding: 0 6px; border-radius: 3px; font-weight: 600; font-family: system-ui, sans-serif; }
+  .op-encrypt { background: var(--enc-bg); color: var(--enc); }
+  .op-decrypt { background: var(--dec-bg); color: var(--dec); }
+  .op-other { background: var(--row-alt); color: var(--muted); border: 1px solid var(--border); }
+  #filterLbl { color: var(--muted); }
+  /* detail pane */
+  #split { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #list { flex: 0 1 auto; max-height: 45%; min-height: 80px; }
+  #detail { flex: 1 1 60%; min-height: 120px; overflow: auto; border-top: 2px solid var(--border); padding: 8px 12px; }
+  #detail[hidden] { display: none; }
+  #dHead { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 13px; }
+  #dHead b { font-size: 14px; }
+  .kv { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; align-items: start; }
+  .kv > .k { color: var(--muted); font-weight: 600; padding-top: 3px; }
+  .kv > .k small { display: block; font-weight: 400; }
+  .v { margin: 0; font: 12px/1.45 Consolas, "SF Mono", monospace; background: var(--input-bg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow: auto; }
+  .v.secret { border-color: var(--key); color: var(--key); font-weight: 600; }
+  .v.plain { border-color: var(--on); }
+  .v.empty { color: var(--muted); font-style: italic; }
 </style>
 </head>
 <body>
@@ -57,6 +83,7 @@
     <button id="hook">Hook OFF</button>
     <button id="clear">Clear</button>
     <span id="count">0 calls</span>
+    <label id="filterLbl" title="importKey / digest / hash 등 보조 호출 숨김"><input id="onlyCipher" type="checkbox" /> encrypt/decrypt만</label>
   </div>
   <span class="sep"></span>
   <div class="group">
@@ -73,6 +100,7 @@
   <button id="burpSave">Save &amp; test</button>
   <span class="hint" title="Burp > CryptoTrace 탭 상단의 Copy token. 127.0.0.1로만 전송합니다.">처음 한 번만 토큰을 붙여 넣으면 됩니다</span>
 </div>
+<div id="split">
 <div id="list">
   <div id="empty">Hook ON을 누르면 탭을 새로고침하고 암호화 호출을 기록합니다.</div>
   <table id="table" hidden>
@@ -82,6 +110,11 @@
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
+</div>
+<div id="detail" hidden>
+  <div id="dHead"></div>
+  <div class="kv" id="dBody"></div>
+</div>
 </div>
 <div id="statusbar"><span id="status"></span></div>
 <script src="config-builder.js"></script>

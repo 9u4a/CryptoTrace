@@ -295,6 +295,6 @@ test('whole-body and JSON-field endpoints on one host get pinned paths, load wit
   assert.equal(JSON.stringify(JSON.parse(login.request.body).data), loginPlain);   // decrypted JSON is embedded as an object
   const prof = eng.handle({ op: 'decryptRequest', host: '127.0.0.1', port: 8088,
     request: { method: 'POST', path: '/api/users/7/profile', headers: [], body: profWire } });
-  assert.equal(prof.request.body, profPlain);
+  assert.equal(prof.request.body, JSON.stringify(JSON.parse(profPlain), null, 2)); // whole-body JSON is pretty-printed
   fs.rmSync(dir, { recursive: true, force: true });
 });
