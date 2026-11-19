@@ -2,39 +2,123 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<title>CryptoTrace Sample Target</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DemoBank 인터넷뱅킹 (CryptoTrace 샘플)</title>
 <style>
-  body { font: 14px/1.5 system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
-  fieldset { margin: 0 0 16px; border: 1px solid #ccc; border-radius: 6px; }
-  legend { font-weight: 600; }
-  input { margin: 2px 6px 2px 0; }
-  pre { background: #f4f4f4; padding: 8px; white-space: pre-wrap; word-break: break-all; min-height: 3em; }
+  :root { --brand: #1f4fd8; --brand-d: #173a9e; --bg: #f3f5f9; --line: #dde2ea; --muted: #6b7280; --ok: #0a7d4f; --err: #c0392b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Pretendard", "Malgun Gothic", system-ui, sans-serif; background: var(--bg); color: #1f2937; }
+  .demo { background: #fff4d6; color: #7a5b00; text-align: center; font-size: 12px; padding: 4px 8px; }
+  header { background: #fff; border-bottom: 1px solid var(--line); }
+  .bar { max-width: 1080px; margin: 0 auto; padding: 14px 16px; display: flex; align-items: center; gap: 28px; }
+  .logo { font-weight: 800; font-size: 20px; color: var(--brand); letter-spacing: -0.5px; }
+  .logo small { font-weight: 500; color: var(--muted); font-size: 12px; margin-left: 6px; }
+  nav a { color: #374151; text-decoration: none; margin-right: 18px; font-weight: 600; }
+  nav a.on { color: var(--brand); }
+  .who { margin-left: auto; color: var(--muted); font-size: 13px; }
+  main { max-width: 1080px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; }
+  .card h2 { margin: 0 0 4px; font-size: 16px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin: 0 0 14px; }
+  .wide { grid-column: 1 / -1; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
+  input, select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font: inherit; background: #fff; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .row3 { display: grid; grid-template-columns: 110px 1fr 1fr; gap: 10px; }
+  button { margin-top: 14px; width: 100%; padding: 10px; border: 0; border-radius: 6px; background: var(--brand); color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+  button:hover { background: var(--brand-d); }
+  .chk { display: flex; gap: 6px; align-items: center; margin-top: 10px; font-size: 13px; }
+  .chk input { width: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #eef2ff; color: var(--brand); }
+  pre { margin: 0; background: #0f172a; color: #d1e3ff; padding: 12px; border-radius: 8px; white-space: pre-wrap; word-break: break-all; min-height: 6em; max-height: 360px; overflow: auto; font: 12px/1.5 Consolas, monospace; }
+  footer { max-width: 1080px; margin: 0 auto 24px; padding: 0 16px; color: var(--muted); font-size: 12px; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
-<h1>CryptoTrace Sample Target</h1>
-<p>Self-made test page. All keys are fake. Open DevTools → CryptoTrace, Hook ON, then press the buttons.</p>
+<div class="demo">CryptoTrace 테스트용 가상 서비스입니다. 은행명·계좌·고객정보·키는 모두 가짜이며 127.0.0.1에서만 동작합니다.</div>
+<header>
+  <div class="bar">
+    <div class="logo">DemoBank<small>인터넷뱅킹</small></div>
+    <nav><a class="on" href="#">조회</a><a href="#">이체</a><a href="#">내 정보</a><a href="#">고객센터</a></nav>
+    <div class="who" id="who">로그인이 필요합니다</div>
+  </div>
+</header>
 
-<fieldset>
-  <legend>A. Login — CryptoJS AES-256-CBC (JSON field <code>$.data</code>, response body)</legend>
-  <input id="a-id" value="alice"> <input id="a-pw" type="password" value="pw1234">
-  <button id="a-go">Login</button>
-</fieldset>
+<main>
+  <section class="card">
+    <h2>로그인</h2>
+    <p class="sub">아이디/비밀번호는 전송 전에 암호화됩니다 (CryptoJS AES-256-CBC, <code>$.data</code> 필드)</p>
+    <label for="a-id">아이디</label>
+    <input id="a-id" value="minjun.kim" autocomplete="username">
+    <label for="a-pw">비밀번호</label>
+    <input id="a-pw" type="password" value="Demo!2026pw" autocomplete="current-password">
+    <label class="chk"><input id="a-keep" type="checkbox" checked> 아이디 저장</label>
+    <button id="a-go">로그인</button>
+  </section>
 
-<fieldset>
-  <legend>B. Transfer — WebCrypto RSA-OAEP envelope + per-request AES-GCM key</legend>
-  <input id="b-to" value="110-222-333333"> <input id="b-amount" value="10000">
-  <button id="b-go">Transfer</button>
-</fieldset>
+  <section class="card">
+    <h2>내 계좌</h2>
+    <p class="sub">평문 API (<code>GET /api/accounts</code>) — 암호화되지 않은 요청과 섞여 있는 실제 환경을 재현</p>
+    <table>
+      <thead><tr><th>계좌</th><th>구분</th><th class="num">잔액</th></tr></thead>
+      <tbody id="acct-rows"><tr><td colspan="3">불러오는 중…</td></tr></tbody>
+    </table>
+  </section>
 
-<fieldset>
-  <legend>C. Profile — WebCrypto AES-GCM inside a Web Worker (whole body, IV prefix)</legend>
-  <input id="c-name" value="Alice"> <input id="c-email" value="alice@shop.test">
-  <button id="c-go">Save</button>
-</fieldset>
+  <section class="card">
+    <h2>계좌이체</h2>
+    <p class="sub">요청마다 새 AES-GCM 키 생성 → 서버 RSA-OAEP 공개키로 봉투 암호화 (WebCrypto)</p>
+    <label for="b-from">출금계좌</label>
+    <select id="b-from"></select>
+    <div class="row">
+      <div><label for="b-bank">입금은행</label>
+        <select id="b-bank">
+          <option value="004">가나은행</option><option value="011">다라은행</option><option value="020">마바은행</option>
+          <option value="088" selected>사아은행</option><option value="090">자차뱅크</option>
+        </select></div>
+      <div><label for="b-to">입금계좌번호</label><input id="b-to" value="110-482-736521"></div>
+    </div>
+    <div class="row">
+      <div><label for="b-name">받는 분</label><input id="b-name" value="이서연"></div>
+      <div><label for="b-amount">이체금액(원)</label><input id="b-amount" value="150000" inputmode="numeric"></div>
+    </div>
+    <div class="row">
+      <div><label for="b-memo">받는 분 통장 표시</label><input id="b-memo" value="11월 회비"></div>
+      <div><label for="b-otp">OTP 번호</label><input id="b-otp" value="482913" inputmode="numeric"></div>
+    </div>
+    <button id="b-go">이체하기</button>
+  </section>
 
-<h2>Log</h2>
-<pre id="log"></pre>
+  <section class="card">
+    <h2>내 정보 변경</h2>
+    <p class="sub">Web Worker 안에서 AES-256-GCM 암호화 — 본문 전체, IV 12바이트 prefix</p>
+    <div class="row">
+      <div><label for="c-name">이름</label><input id="c-name" value="김민준"></div>
+      <div><label for="c-phone">휴대폰</label><input id="c-phone" value="010-2847-5519"></div>
+    </div>
+    <label for="c-email">이메일</label>
+    <input id="c-email" value="minjun.kim@mail.demobank.test">
+    <div class="row3">
+      <div><label for="c-zip">우편번호</label><input id="c-zip" value="04524"></div>
+      <div><label for="c-addr1">주소</label><input id="c-addr1" value="서울특별시 중구 데모로 120"></div>
+      <div><label for="c-addr2">상세주소</label><input id="c-addr2" value="8층 801호"></div>
+    </div>
+    <label class="chk"><input id="c-mkt" type="checkbox"> 마케팅 정보 수신 동의</label>
+    <button id="c-go">저장</button>
+  </section>
+
+  <section class="card wide">
+    <h2>응답 로그 <span class="tag">복호화된 응답</span></h2>
+    <p class="sub">페이지가 응답을 복호화한 결과입니다. 네트워크/Burp에는 암호문만 보입니다.</p>
+    <pre id="log"></pre>
+  </section>
+</main>
+<footer>DemoBank는 실존하지 않는 가상 서비스입니다 · CryptoTrace sample target</footer>
 
 <script src="vendor/crypto-js-4.2.0.js"></script>
 <script src="app.js"></script>

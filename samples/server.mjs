@@ -8,6 +8,7 @@
 //                          Body {ek, iv, ct}; response {iv, ct} under the same AES key.  (GET /api/pubkey → SPKI)
 //   C  POST /api/profile   WebCrypto AES-256-GCM inside a Web Worker, static key.
 //                          Body = base64(iv[12] || ciphertext+tag); response same format.
+//   GET  /api/accounts   plain JSON (fake demo accounts), mixed in like a real app.
 // Responses echo user input so reflected-payload detection can be tested through Burp.
 
 import http from 'node:http';
@@ -88,14 +89,45 @@ function serveStatic(req, res) {
 export function createSampleServer({ keyDir = KEY_DIR } = {}) {
   const rsa = loadRsaKeys(keyDir);
 
+  // Fake in-memory demo data so responses look like a real banking API (all values fictional).
+  const accounts = [
+    { acctNo: '1002-845-112233', nick: '데모 입출금통장', type: 'DEPOSIT', balance: 3482150 },
+    { acctNo: '1002-845-445566', nick: '데모 비상금통장', type: 'SAVING', balance: 12000000 },
+  ];
+  const banks = { '004': '가나은행', '011': '다라은행', '020': '마바은행', '088': '사아은행', '090': '자차뱅크' };
+  const mask = (s, keep = 4) => (s.length <= keep ? s : '*'.repeat(s.length - keep) + s.slice(-keep));
+  const now = () => new Date().toISOString().replace('Z', '+00:00');
+  const b64url = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const fakeJwt = (sub) =>
+    `${b64url({ alg: 'HS256', typ: 'JWT' })}.${b64url({ sub, iss: 'auth.demobank.test', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 1800 })}.${crypto.randomBytes(32).toString('base64url')}`;
+
   const routes = {
     'GET /api/pubkey': async () => [200, { spki: rsa.spki }],
 
+    'GET /api/accounts': async () => [200, { code: '0000', data: accounts.map((a) => ({ ...a })) }],
+
     'POST /api/login': async (body) => {
       const { data } = JSON.parse(body);
-      const { id, pw } = JSON.parse(aesCbcDecrypt(data));
+      const { id, pw, deviceId } = JSON.parse(aesCbcDecrypt(data));
       const ok = typeof id === 'string' && typeof pw === 'string';
-      const reply = JSON.stringify({ ok, msg: `welcome ${id}`, token: crypto.randomUUID() });
+      const reply = JSON.stringify({
+        ok,
+        code: ok ? '0000' : 'E401',
+        msg: `welcome ${id}`,
+        token: crypto.randomUUID(),
+        data: {
+          custNo: 'C2025' + String(100000 + (id.length * 7919) % 900000),
+          custName: '김*준',
+          loginId: id,
+          grade: 'GOLD',
+          deviceId: deviceId ?? null,
+          lastLoginAt: '2026-11-18T21:04:33+09:00',
+          lastLoginIp: '127.0.0.1',
+          accessToken: fakeJwt(id),
+          refreshToken: crypto.randomBytes(24).toString('hex'),
+          expiresIn: 1800,
+        },
+      });
       return [200, aesCbcEncrypt(reply), 'text/plain'];
     },
 
@@ -106,7 +138,26 @@ export function createSampleServer({ keyDir = KEY_DIR } = {}) {
         Buffer.from(ek, 'base64'),
       );
       const req = JSON.parse(gcmDecrypt(aesKey, Buffer.from(iv, 'base64'), Buffer.from(ct, 'base64')));
-      const reply = JSON.stringify({ ok: true, msg: `sent ${req.amount} to ${req.to}` });
+      const from = accounts.find((a) => a.acctNo === req.fromAcct) ?? accounts[0];
+      const amount = Number(req.amount) || 0;
+      from.balance -= amount;
+      const reply = JSON.stringify({
+        ok: true,
+        code: '0000',
+        msg: `sent ${req.amount} to ${req.to}`,
+        data: {
+          txId: 'TX' + Date.now() + crypto.randomInt(100, 999),
+          txDt: now(),
+          fromAcct: from.acctNo,
+          toBankNm: banks[req.toBankCd] ?? req.toBankCd ?? null,
+          toAcct: mask(String(req.to ?? '')),
+          toName: req.toName ?? null,
+          amount,
+          fee: 0,
+          memo: req.memo ?? '',
+          balanceAfter: from.balance,
+        },
+      });
       const out = gcmEncrypt(aesKey, reply);
       return [200, { iv: out.iv.toString('base64'), ct: out.ct.toString('base64') }];
     },
@@ -114,7 +165,12 @@ export function createSampleServer({ keyDir = KEY_DIR } = {}) {
     'POST /api/profile': async (body) => {
       const raw = Buffer.from(body.trim(), 'base64');
       const req = JSON.parse(gcmDecrypt(C_KEY, raw.subarray(0, C_IV_LEN), raw.subarray(C_IV_LEN)));
-      const reply = JSON.stringify({ ok: true, msg: `profile saved for ${req.name}` });
+      const reply = JSON.stringify({
+        ok: true,
+        code: '0000',
+        msg: `profile saved for ${req.name}`,
+        data: { ...req, custNo: 'C2025104729', updatedAt: now() },
+      });
       const out = gcmEncrypt(C_KEY, reply);
       return [200, Buffer.concat([out.iv, out.ct]).toString('base64'), 'text/plain'];
     },
