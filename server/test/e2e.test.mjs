@@ -99,3 +99,35 @@ test('protocol errors are reported, not fatal', async () => {
   assert.match(r.error, /unknown op/);
   assert.equal((await call('health')).ok, true);
 });
+
+test('whole-body JSON is pretty-printed on decrypt and compacted back on encrypt', async () => {
+  const compactBody = JSON.stringify({ name: 'Kim', email: 'k@shop.test', marketingAgree: false });
+  const enc = await call('encryptRequest', {
+    host: '127.0.0.1', port,
+    request: { path: '/api/profile', headers: [['Content-Type', 'text/plain'], ['X-CT-Plain', '1']], body: compactBody },
+  });
+  const dec = await call('decryptRequest', { host: '127.0.0.1', port, request: enc.request });
+  assert.equal(dec.request.body, JSON.stringify(JSON.parse(compactBody), null, 2));
+
+  // Unedited pretty text re-encrypts to the original compact plaintext.
+  const again = await call('encryptRequest', {
+    host: '127.0.0.1', port,
+    request: { ...dec.request, headers: [...dec.request.headers.filter(([n]) => n.toLowerCase() !== 'x-ct-plain'), ['X-CT-Plain', '1']] },
+  });
+  const back = await call('decryptRequest', { host: '127.0.0.1', port, request: again.request });
+  assert.equal(back.request.body, dec.request.body);
+  const res = await send(again.request);
+  assert.equal(res.status, 200);
+  const resDec = await call('decryptResponse', { host: '127.0.0.1', port, path: '/api/profile', response: res });
+  assert.match(resDec.response.body, /^\{\n  "ok": true,/);
+});
+
+test('whole-body plaintext that does not round-trip exactly is left verbatim', async () => {
+  const odd = '{"amount":1.0,"n":12345678901234567890}';
+  const enc = await call('encryptRequest', {
+    host: '127.0.0.1', port,
+    request: { path: '/api/profile', headers: [['Content-Type', 'text/plain'], ['X-CT-Plain', '1']], body: odd },
+  });
+  const dec = await call('decryptRequest', { host: '127.0.0.1', port, request: enc.request });
+  assert.equal(dec.request.body, odd);
+});

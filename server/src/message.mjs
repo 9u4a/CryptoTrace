@@ -88,6 +88,27 @@ const embed = (plain) => {
 };
 const unembed = (v) => (typeof v === 'string' ? v : JSON.stringify(v));
 
+// Whole-body plaintext that is JSON is shown pretty-printed. Only when compact <-> pretty round-trips exactly
+// (no 1.0 / big-int / escape drift), so re-encrypting an unedited body yields the original plaintext.
+const pretty = (plain) => {
+  try {
+    const v = JSON.parse(plain);
+    if (v === null || typeof v !== 'object' || JSON.stringify(v) !== plain) return plain;
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return plain;
+  }
+};
+// Inverse of pretty(): compact only text that is exactly our pretty form; anything else is encrypted verbatim.
+const compact = (text) => {
+  try {
+    const v = JSON.parse(text);
+    return v !== null && typeof v === 'object' && JSON.stringify(v, null, 2) === text ? JSON.stringify(v) : text;
+  } catch {
+    return text;
+  }
+};
+
 /**
  * direction: 'decrypt' | 'encrypt'. Returns { message, applied: [{in, where, ok, error?}] }.
  * Never throws for a single location; failures are reported per rule and the value is left as-is.
@@ -109,7 +130,7 @@ export function transform(profile, rules, msg, direction, integrity = [], reques
     try {
       if (r.in === 'body') {
         if (!body) continue;
-        body = run(cipher, body);
+        body = direction === 'decrypt' ? pretty(cipher.decrypt(body)) : cipher.encrypt(compact(body));
       } else if (r.in === 'header') {
         const i = findHeader(headers, r.name);
         if (i < 0) continue;
