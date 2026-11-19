@@ -1,6 +1,7 @@
 package com.cryptotrace;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.core.ToolType;
 import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -37,6 +38,23 @@ public final class PlainEditors {
         return ctx -> new ResponseTab(api, crypto, ctx);
     }
 
+    /** True while we build the nested Burp editor, so the tabs Burp adds to it know they are nested. */
+    private static final ThreadLocal<Boolean> BUILDING = ThreadLocal.withInitial(() -> false);
+
+    /** Our tab inside our own embedded editor (or any extension-made editor) would show "Decrypted" twice. */
+    private static boolean nested(EditorCreationContext ctx) {
+        return BUILDING.get() || (ctx.toolSource() != null && ctx.toolSource().isFromTool(ToolType.EXTENSIONS));
+    }
+
+    private static <T> T building(java.util.function.Supplier<T> make) {
+        BUILDING.set(true);
+        try {
+            return make.get();
+        } finally {
+            BUILDING.set(false);
+        }
+    }
+
     private static EditorOptions[] options(EditorCreationContext ctx) {
         return ctx.editorMode() == EditorMode.READ_ONLY ? new EditorOptions[] {EditorOptions.READ_ONLY} : new EditorOptions[0];
     }
@@ -44,6 +62,7 @@ public final class PlainEditors {
     private static final class RequestTab implements ExtensionProvidedHttpRequestEditor {
         private final MontoyaApi api;
         private final Crypto crypto;
+        private final boolean nested;
         private final HttpRequestEditor editor;
         private HttpRequestResponse current;
         private Crypto.Result<HttpRequest> decrypted;
@@ -51,11 +70,13 @@ public final class PlainEditors {
         RequestTab(MontoyaApi api, Crypto crypto, EditorCreationContext ctx) {
             this.api = api;
             this.crypto = crypto;
-            this.editor = api.userInterface().createHttpRequestEditor(options(ctx));
+            this.nested = nested(ctx);
+            this.editor = nested ? null : building(() -> api.userInterface().createHttpRequestEditor(options(ctx)));
         }
 
         @Override
         public boolean isEnabledFor(HttpRequestResponse rr) {
+            if (nested) return false;
             try {
                 return rr.request() != null && crypto.decryptRequest(rr.request()).matched() != null;
             } catch (ServerClient.ServerException e) {
@@ -113,34 +134,37 @@ public final class PlainEditors {
 
         @Override
         public Component uiComponent() {
-            return editor.uiComponent();
+            return editor == null ? new javax.swing.JPanel() : editor.uiComponent();
         }
 
         @Override
         public Selection selectedData() {
-            return editor.selection().orElse(null);
+            return editor == null ? null : editor.selection().orElse(null);
         }
 
         @Override
         public boolean isModified() {
-            return editor.isModified();
+            return editor != null && editor.isModified();
         }
     }
 
     private static final class ResponseTab implements ExtensionProvidedHttpResponseEditor {
         private final MontoyaApi api;
         private final Crypto crypto;
+        private final boolean nested;
         private final HttpResponseEditor editor;
         private HttpRequestResponse current;
 
         ResponseTab(MontoyaApi api, Crypto crypto, EditorCreationContext ctx) {
             this.api = api;
             this.crypto = crypto;
-            this.editor = api.userInterface().createHttpResponseEditor(options(ctx));
+            this.nested = nested(ctx);
+            this.editor = nested ? null : building(() -> api.userInterface().createHttpResponseEditor(options(ctx)));
         }
 
         @Override
         public boolean isEnabledFor(HttpRequestResponse rr) {
+            if (nested) return false;
             if (rr.request() == null || rr.response() == null) return false;
             // Already decrypted in flight by CryptoHttpHandler: the normal Response tab shows plaintext.
             if (rr.response().hasHeader(CryptoHttpHandler.DECRYPTED_MARKER)) return false;
@@ -182,17 +206,17 @@ public final class PlainEditors {
 
         @Override
         public Component uiComponent() {
-            return editor.uiComponent();
+            return editor == null ? new javax.swing.JPanel() : editor.uiComponent();
         }
 
         @Override
         public Selection selectedData() {
-            return editor.selection().orElse(null);
+            return editor == null ? null : editor.selection().orElse(null);
         }
 
         @Override
         public boolean isModified() {
-            return editor.isModified();
+            return editor != null && editor.isModified();
         }
     }
 
