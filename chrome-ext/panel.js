@@ -228,7 +228,7 @@ function applyCell(rec) {
 
 function opBadge(op) {
   const b = document.createElement('span');
-  b.className = 'op ' + (op === 'encrypt' ? 'op-encrypt' : op === 'decrypt' ? 'op-decrypt' : 'op-other');
+  b.className = op === 'encrypt' ? 'op-encrypt' : op === 'decrypt' ? 'op-decrypt' : '';
   b.textContent = op || '';
   return b;
 }
@@ -313,8 +313,8 @@ let lastDetail = '';
 function renderDetail(rec) {
   const isPlain = (side) => (rec.op === 'encrypt' && side === 'input') || (rec.op === 'decrypt' && side === 'output');
   const rows = [
-    ['key', rec.key, 'secret'],
-    ['iv', rec.iv, 'secret'],
+    ['key', rec.key, ''],
+    ['iv', rec.iv, ''],
     [rec.op === 'decrypt' ? 'input (암호문)' : rec.op === 'encrypt' ? 'input (평문)' : 'input', rec.input, isPlain('input') ? 'plain' : ''],
     [rec.op === 'encrypt' ? 'output (암호문)' : rec.op === 'decrypt' ? 'output (평문)' : 'output', rec.output, isPlain('output') ? 'plain' : ''],
     ['apply (req)', rec.apply ? { value: applyText(rec.apply) + (rec.apply.at ? '   @ ' + rec.apply.at : '') } : null, ''],
@@ -328,11 +328,10 @@ function renderDetail(rec) {
   lastDetail = sig;
 
   const head = el('dHead');
-  head.textContent = '';
-  const b = document.createElement('b');
-  b.textContent = '#' + rec.n;
-  head.append(b, opBadge(rec.op));
+  head.textContent = '#' + rec.n + ' ';
+  head.appendChild(opBadge(rec.op));
   const meta = document.createElement('span');
+  meta.className = 'meta';
   meta.textContent = [rec.lib, algText(rec)].filter(Boolean).join(' · ');
   head.appendChild(meta);
 
@@ -350,7 +349,7 @@ function renderDetail(rec) {
     }
     const v = document.createElement('pre');
     const has = obj && obj.value != null && obj.value !== '';
-    v.className = 'v ' + (has ? cls : 'empty');
+    v.className = has ? 'v' : 'v empty';
     v.textContent = has ? (cls === 'plain' ? pretty(obj.value) : String(obj.value)) : '—';
     body.append(k, v);
   }
