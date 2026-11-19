@@ -1,14 +1,14 @@
 package com.cryptotrace;
 
 import burp.api.montoya.MontoyaApi;
-import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.Selection;
 import burp.api.montoya.ui.editor.EditorOptions;
-import burp.api.montoya.ui.editor.RawEditor;
+import burp.api.montoya.ui.editor.HttpRequestEditor;
+import burp.api.montoya.ui.editor.HttpResponseEditor;
 import burp.api.montoya.ui.editor.extension.EditorCreationContext;
 import burp.api.montoya.ui.editor.extension.EditorMode;
 import burp.api.montoya.ui.editor.extension.ExtensionProvidedHttpRequestEditor;
@@ -18,9 +18,14 @@ import burp.api.montoya.ui.editor.extension.HttpResponseEditorProvider;
 
 import java.awt.Component;
 
-/** "Decrypted" tabs on request and response editors. Edits are re-encrypted into the original message. */
+/**
+ * "Decrypted" tabs on request and response editors. Edits are re-encrypted into the original message.
+ * Each tab embeds Burp's own HTTP editor, so the plaintext gets Burp's Pretty / Raw / Hex views and JSON
+ * highlighting. Errors are shown as an {@link #ERROR_HEADER} header (stripped again before re-encrypting).
+ */
 public final class PlainEditors {
     static final String CAPTION = "Decrypted";
+    static final String ERROR_HEADER = "X-CryptoTrace-Error";
 
     private PlainEditors() {}
 
@@ -32,24 +37,21 @@ public final class PlainEditors {
         return ctx -> new ResponseTab(api, crypto, ctx);
     }
 
-    private static RawEditor editor(MontoyaApi api, EditorCreationContext ctx) {
-        RawEditor e = ctx.editorMode() == EditorMode.READ_ONLY
-                ? api.userInterface().createRawEditor(EditorOptions.READ_ONLY)
-                : api.userInterface().createRawEditor();
-        return e;
+    private static EditorOptions[] options(EditorCreationContext ctx) {
+        return ctx.editorMode() == EditorMode.READ_ONLY ? new EditorOptions[] {EditorOptions.READ_ONLY} : new EditorOptions[0];
     }
 
     private static final class RequestTab implements ExtensionProvidedHttpRequestEditor {
         private final MontoyaApi api;
         private final Crypto crypto;
-        private final RawEditor editor;
+        private final HttpRequestEditor editor;
         private HttpRequestResponse current;
         private Crypto.Result<HttpRequest> decrypted;
 
         RequestTab(MontoyaApi api, Crypto crypto, EditorCreationContext ctx) {
             this.api = api;
             this.crypto = crypto;
-            this.editor = editor(api, ctx);
+            this.editor = api.userInterface().createHttpRequestEditor(options(ctx));
         }
 
         @Override
@@ -66,11 +68,11 @@ public final class PlainEditors {
             current = rr;
             try {
                 decrypted = crypto.decryptRequest(rr.request());
-                String note = decrypted.allOk() ? "" : "# CryptoTrace: " + decrypted.errors() + "\n";
-                editor.setContents(ByteArray.byteArray(note + decrypted.message().toString()));
+                HttpRequest shown = decrypted.message();
+                editor.setRequest(decrypted.allOk() ? shown : shown.withAddedHeader(ERROR_HEADER, oneLine(decrypted.errors())));
             } catch (ServerClient.ServerException e) {
                 decrypted = null;
-                editor.setContents(ByteArray.byteArray("# CryptoTrace: " + e.getMessage()));
+                editor.setRequest(rr.request().withAddedHeader(ERROR_HEADER, oneLine(e.getMessage())));
             }
         }
 
@@ -79,7 +81,7 @@ public final class PlainEditors {
             if (!editor.isModified() || decrypted == null) return current.request();
             // Apply the edited path/headers/body onto the ORIGINAL request object so its HTTP/2
             // metadata, header order and casing survive (parsing raw text would discard them).
-            HttpRequest edited = mergeOnto(current.request(), stripNote(editor.getContents()));
+            HttpRequest edited = mergeOnto(current.request(), editor.getRequest().withRemovedHeader(ERROR_HEADER));
             try {
                 Crypto.Result<HttpRequest> enc = crypto.encryptRequest(edited);
                 if (!enc.allOk()) api.logging().logToError("CryptoTrace re-encrypt: " + enc.errors());
@@ -90,9 +92,8 @@ public final class PlainEditors {
             }
         }
 
-        /** Parse the editor text only to read its fields, then transplant them onto `base`. */
-        private static HttpRequest mergeOnto(HttpRequest base, String editedText) {
-            HttpRequest parsed = HttpRequest.httpRequest(base.httpService(), ByteArray.byteArray(editedText));
+        /** Read the edited request's fields only, then transplant them onto `base`. */
+        private static HttpRequest mergeOnto(HttpRequest base, HttpRequest parsed) {
             HttpRequest merged = parsed.path().equals(base.path()) ? base : base.withPath(parsed.path());
             java.util.Set<String> want = new java.util.HashSet<>();
             for (HttpHeader h : parsed.headers()) want.add(h.name().toLowerCase());
@@ -129,13 +130,13 @@ public final class PlainEditors {
     private static final class ResponseTab implements ExtensionProvidedHttpResponseEditor {
         private final MontoyaApi api;
         private final Crypto crypto;
-        private final RawEditor editor;
+        private final HttpResponseEditor editor;
         private HttpRequestResponse current;
 
         ResponseTab(MontoyaApi api, Crypto crypto, EditorCreationContext ctx) {
             this.api = api;
             this.crypto = crypto;
-            this.editor = editor(api, ctx);
+            this.editor = api.userInterface().createHttpResponseEditor(options(ctx));
         }
 
         @Override
@@ -155,17 +156,17 @@ public final class PlainEditors {
             current = rr;
             try {
                 Crypto.Result<HttpResponse> dec = crypto.decryptResponse(rr.request(), rr.response());
-                String note = dec.allOk() ? "" : "# CryptoTrace: " + dec.errors() + "\n";
-                editor.setContents(ByteArray.byteArray(note + dec.message().toString()));
+                HttpResponse shown = dec.message();
+                editor.setResponse(dec.allOk() ? shown : shown.withAddedHeader(ERROR_HEADER, oneLine(dec.errors())));
             } catch (ServerClient.ServerException e) {
-                editor.setContents(ByteArray.byteArray("# CryptoTrace: " + e.getMessage()));
+                editor.setResponse(rr.response().withAddedHeader(ERROR_HEADER, oneLine(e.getMessage())));
             }
         }
 
         @Override
         public HttpResponse getResponse() {
             if (!editor.isModified()) return current.response();
-            HttpResponse edited = HttpResponse.httpResponse(stripNote(editor.getContents()));
+            HttpResponse edited = editor.getResponse().withRemovedHeader(ERROR_HEADER);
             try {
                 return crypto.encryptResponse(current.request(), edited).message();
             } catch (ServerClient.ServerException e) {
@@ -195,9 +196,8 @@ public final class PlainEditors {
         }
     }
 
-    /** Drop our "# CryptoTrace: ..." error banner line if the user left it in. */
-    static String stripNote(ByteArray contents) {
-        String s = contents.toString();
-        return s.startsWith("# CryptoTrace:") ? s.substring(s.indexOf('\n') + 1) : s;
+    /** Header values must stay on one line. */
+    static String oneLine(String s) {
+        return s == null ? "" : s.replaceAll("[\\r\\n]+", " ").trim();
     }
 }
