@@ -25,6 +25,21 @@ if (files.length) {
 }
 process.stderr.write(`[cryptotrace] server ${VERSION} ready (stdio)\n`);
 
+// Browser oracle (L4): when a request needs a page-computed value, the server asks Burp with a line
+//   out: {"oracle": {"oid": 7, "cipher", "fn", "frame", "dir": "encrypt", "value"}}
+// and Burp answers (after asking the browser) with
+//   in : {"oracleResult": 7, "ok": true, "value": "..."} | {"oracleResult": 7, "ok": false, "error": "..."}
+// Requests are handled concurrently; responses carry their id, so order doesn't matter.
+const ORACLE_TIMEOUT_MS = Number(process.env.CT_ORACLE_TIMEOUT_MS) || 10000;
+let oseq = 0;
+const asked = new Map();
+const oracleCall = (job) => new Promise((resolve, reject) => {
+  const oid = ++oseq;
+  const timer = setTimeout(() => { asked.delete(oid); reject(new Error('the browser did not answer in time (oracle on in Burp, tab open?)')); }, ORACLE_TIMEOUT_MS);
+  asked.set(oid, { resolve, reject, timer });
+  write({ oracle: { oid, ...job } });
+});
+
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on('line', (line) => {
   if (!line.trim()) return;
@@ -34,10 +49,18 @@ rl.on('line', (line) => {
   } catch {
     return write({ id: null, ok: false, error: 'invalid JSON line' });
   }
-  try {
-    write({ id: req.id ?? null, ok: true, ...engine.handle(req) });
-  } catch (e) {
-    write({ id: req.id ?? null, ok: false, error: e.message });
+  if (req.oracleResult != null) {
+    const w = asked.get(req.oracleResult);
+    if (!w) return;
+    asked.delete(req.oracleResult);
+    clearTimeout(w.timer);
+    if (req.ok) w.resolve(req.value);
+    else w.reject(new Error(req.error || 'oracle call failed'));
+    return;
   }
+  engine.handleAsync(req, oracleCall).then(
+    (res) => write({ id: req.id ?? null, ok: true, ...res }),
+    (e) => write({ id: req.id ?? null, ok: false, error: e.message }),
+  );
 });
 rl.on('close', () => process.exit(0));

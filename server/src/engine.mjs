@@ -6,6 +6,7 @@ export const VERSION = '0.2.0';
 
 export function createEngine() {
   let profiles = [];
+  const env = { session: null }; // per-request oracle session (handleAsync), see profile.mjs oracleCipher
 
   const pick = (host, port, path = '') => {
     const pathname = path.split('?')[0];
@@ -26,10 +27,10 @@ export function createEngine() {
       const loaded = [];
       const results = files.map((file) => {
         try {
-          const p = loadProfile(file);
+          const p = loadProfile(file, env);
           loaded.push(p);
           const scope = p.scope.map((s) => ({ host: s.host, port: s.port, pathRegex: s.pathRegex }));
-          return { file, profile: p.name, selftest: selftest(p), captures: p.captures, scope, warnings: p.warnings, identified: p.identified };
+          return { file, profile: p.name, selftest: selftest(p), captures: p.captures, scope, warnings: p.warnings, identified: p.identified, oracles: p.oracles };
         } catch (e) {
           return { file, error: e.message };
         }
@@ -92,11 +93,29 @@ export function createEngine() {
     return c;
   }
 
+  const handle = (req) => {
+    const fn = ops[req.op];
+    if (!fn) throw new Error(`unknown op "${req.op}"`);
+    return fn(req);
+  };
+
   return {
-    handle(req) {
-      const fn = ops[req.op];
-      if (!fn) throw new Error(`unknown op "${req.op}"`);
-      return fn(req);
+    handle,
+    /** Like handle, for requests that may need the browser oracle: run, fetch what the oracle ciphers asked for
+     * via oracleCall(job) -> Promise<string> (job = {cipher, fn, frame, dir, value}), run again with the answers.
+     * A failed answer becomes that field's error (the request is then blocked, never sent in plaintext). */
+    async handleAsync(req, oracleCall) {
+      const session = { cache: new Map(), need: new Map() };
+      for (let round = 0; ; round++) {
+        session.need.clear();
+        env.session = session;
+        let result;
+        try { result = handle(req); } finally { env.session = null; }
+        if (!session.need.size || !oracleCall || round >= 3) return result;
+        await Promise.all([...session.need.entries()].map(async ([key, job]) => {
+          try { session.cache.set(key, { value: String(await oracleCall(job)) }); } catch (e) { session.cache.set(key, { error: e.message }); }
+        }));
+      }
     },
   };
 }

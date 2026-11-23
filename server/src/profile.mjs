@@ -63,7 +63,32 @@ function unidentifiedCipher(reason) {
   return { deterministic: false, pending: true, unidentified: reason, encrypt: err, decrypt: err };
 }
 
-function buildCipher(file, name, spec, store, keySpecs, vectors = []) {
+// L4 browser oracle: a cipher only the page can compute (custom code, keys we can't hold). Runs through
+// env.session, which engine.handleAsync sets per request: an answer already fetched is used, otherwise the
+// call is recorded as needed and fails for now -- handleAsync fetches the answers (Burp -> browser) and
+// re-runs the request. Encrypt only unless the page's decrypt function is known (o.decryptFn): decrypt
+// shows the field as ct-keep (message.mjs), like a public-key field.
+function oracleCipher(name, o, env) {
+  const call = (dir, value) => {
+    const s = env && env.session;
+    if (!s) throw new Error('oracle: needs the running crypto server and the browser (oracle on in Burp)');
+    const key = dir + '\u0000' + value;
+    if (s.cache.has(key)) {
+      const r = s.cache.get(key);
+      if (r.error) throw new Error('oracle: ' + r.error);
+      return r.value;
+    }
+    s.need.set(key, { cipher: name, fn: dir === 'decrypt' ? o.decryptFn : o.fn, frame: o.frame || '', dir, value });
+    throw new Error('oracle: waiting for the browser');
+  };
+  return { deterministic: false, oracle: o, canDecrypt: !!o.decryptFn, encrypt: (v) => call('encrypt', v), decrypt: (v) => call('decrypt', v) };
+}
+
+function buildCipher(file, name, spec, store, keySpecs, vectors = [], env = null) {
+  if (spec.oracle && !spec.identify) {
+    if (!spec.oracle.fn) fail(file, `cipher "${name}": oracle needs "fn"`);
+    return oracleCipher(name, spec.oracle, env);
+  }
   const pendingKeys = [];
   const keyOf = (ref) => {
     if (!ref) return null;
@@ -76,7 +101,7 @@ function buildCipher(file, name, spec, store, keySpecs, vectors = []) {
   };
   if (spec.identify) {
     const found = identifyCipher(spec.identify, store, vectors.filter((v) => v.cipher === name));
-    if (!found.cipher) return unidentifiedCipher(found.reason);
+    if (!found.cipher) return spec.oracle && spec.oracle.fn ? oracleCipher(name, spec.oracle, env) : unidentifiedCipher(found.reason);
     found.cipher.identified = { cipher: name, ...found.chosen };
     return found.cipher;
   }
@@ -167,7 +192,7 @@ function collectWarnings(request, response, integrity, integrityResponse) {
   return out;
 }
 
-export function loadProfile(file) {
+export function loadProfile(file, env = null) {
   let cfg;
   try {
     cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -208,7 +233,7 @@ export function loadProfile(file) {
     const ciphers = {};
     for (const [name, spec] of Object.entries(cipherSpecs)) {
       try {
-        ciphers[name] = buildCipher(file, name, spec, store, keySpecs, cfg.selftest || []);
+        ciphers[name] = buildCipher(file, name, spec, store, keySpecs, cfg.selftest || [], env);
       } catch (e) {
         fail(file, `cipher "${name}": ${e.message}`);
       }
@@ -222,6 +247,7 @@ export function loadProfile(file) {
   profile.integrity = validateIntegrity(file, cfg.integrity, store, keySpecs);
   profile.integrityResponse = validateIntegrity(file, cfg.integrityResponse, store, keySpecs);
   profile.identified = Object.values(profile.ciphers).filter((c) => c.identified).map((c) => c.identified);
+  profile.oracles = Object.entries(profile.ciphers).filter(([, c]) => c.oracle).map(([cipher, c]) => ({ cipher, fn: c.oracle.fn }));
   profile.warnings = collectWarnings(profile.request, profile.response, profile.integrity, profile.integrityResponse);
 
   // Runtime key capture: store the bytes and rebuild so dependent ciphers become usable.
@@ -254,6 +280,7 @@ export function selftest(profile) {
   return profile.selftestVectors.map((v) => {
     const c = profile.ciphers[v.cipher];
     if (!c) return { cipher: v.cipher, ok: false, error: 'unknown cipher' };
+    if (c.oracle) return { cipher: v.cipher, ok: true, note: 'oracle: computed by the page, checked when used' };
     if (c.unidentified) return { cipher: v.cipher, ok: false, error: 'not identified: ' + c.unidentified };
     if (c.pending) return { cipher: v.cipher, ok: false, error: 'session key not captured yet' };
     // A cipher whose IV sits in another field gets the vector's own iv for the decrypt check, and a scratch
