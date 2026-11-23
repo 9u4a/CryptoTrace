@@ -48,13 +48,19 @@ public final class Bridge {
     private final Supplier<String> token;
     private final Receiver receiver;
     private final Consumer<String> log;
+    private final OracleBroker oracle; // null: no oracle routes (tests / older wiring)
     private HttpServer http;
     private int port;
 
     public Bridge(Supplier<String> token, Receiver receiver, Consumer<String> log) {
+        this(token, receiver, log, null);
+    }
+
+    public Bridge(Supplier<String> token, Receiver receiver, Consumer<String> log, OracleBroker oracle) {
         this.token = token;
         this.receiver = receiver;
         this.log = log;
+        this.oracle = oracle;
     }
 
     /** (Re)binds to 127.0.0.1:port; port 0 picks a free one (tests). */
@@ -62,7 +68,8 @@ public final class Bridge {
         stop();
         HttpServer s = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 0);
         s.createContext("/", this::handle);
-        s.setExecutor(Executors.newSingleThreadExecutor(r -> {
+        // a few threads: the panel's oracle long-poll must not block config pushes
+        s.setExecutor(Executors.newFixedThreadPool(4, r -> {
             Thread t = new Thread(r, "cryptotrace-bridge");
             t.setDaemon(true);
             return t;
@@ -100,10 +107,32 @@ public final class Bridge {
                 reply(ex, status, error(problem));
                 return;
             }
+            if ("GET".equals(method) && "/oracle/next".equals(path)) {
+                JsonObject o = new JsonObject();
+                o.addProperty("enabled", oracle != null && oracle.enabled());
+                if (oracle == null || !oracle.enabled()) { // tell the panel to back off; it polls again later
+                    reply(ex, 200, o);
+                    return;
+                }
+                long wait = 20_000;
+                String q = ex.getRequestURI().getQuery();
+                if (q != null && q.startsWith("wait=")) {
+                    try { wait = Math.max(0, Math.min(25_000, Long.parseLong(q.substring(5)))); } catch (NumberFormatException ignored) { }
+                }
+                try {
+                    JsonObject job = oracle.next(wait);
+                    if (job != null) o.add("job", job);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                reply(ex, 200, o);
+                return;
+            }
             if ("GET".equals(method)) {
                 JsonObject o = new JsonObject();
                 o.addProperty("ok", true);
                 o.addProperty("name", "CryptoTrace");
+                o.addProperty("oracle", oracle != null && oracle.enabled());
                 reply(ex, 200, o);
                 return;
             }
@@ -121,6 +150,20 @@ public final class Bridge {
                 reply(ex, 400, error("invalid JSON: " + e.getMessage()));
                 return;
             }
+            if ("/oracle/result".equals(path)) {
+                if (oracle == null || !cfg.has("oid")) {
+                    reply(ex, 400, error("no oracle job"));
+                    return;
+                }
+                boolean ok = cfg.has("ok") && cfg.get("ok").getAsBoolean();
+                oracle.complete(cfg.get("oid").getAsInt(), ok,
+                        ok && cfg.has("value") ? cfg.get("value").getAsString() : null,
+                        cfg.has("error") && !cfg.get("error").isJsonNull() ? cfg.get("error").getAsString() : null);
+                JsonObject o = new JsonObject();
+                o.addProperty("ok", true);
+                reply(ex, 200, o);
+                return;
+            }
             try {
                 reply(ex, 200, receiver.receive(cfg));
             } catch (Refused r) {
@@ -135,8 +178,9 @@ public final class Bridge {
     static String check(String method, String path, String host, String origin, String auth, String contentType,
                         int port, String token) {
         boolean ping = "GET".equals(method) && "/ping".equals(path);
-        boolean push = "POST".equals(method) && "/config".equals(path);
-        if (!ping && !push) return "not found: " + method + " " + path;
+        boolean push = "POST".equals(method) && ("/config".equals(path) || "/oracle/result".equals(path));
+        boolean poll = "GET".equals(method) && "/oracle/next".equals(path);
+        if (!ping && !push && !poll) return "not found: " + method + " " + path;
         if (host == null || !(host.equalsIgnoreCase("127.0.0.1:" + port) || host.equalsIgnoreCase("localhost:" + port))) {
             return "bad Host header";
         }

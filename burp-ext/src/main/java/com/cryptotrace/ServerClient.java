@@ -69,6 +69,13 @@ public final class ServerClient implements AutoCloseable {
             while ((line = r.readLine()) != null) {
                 try {
                     JsonObject msg = GSON.fromJson(line, JsonObject.class);
+                    if (msg.has("oracle") && msg.get("oracle").isJsonObject()) { // the server asks for a page-computed value
+                        Consumer<JsonObject> sink = oracleSink;
+                        int oid = msg.getAsJsonObject("oracle").get("oid").getAsInt();
+                        if (sink == null) oracleResult(oid, false, null, "the browser oracle is not available in this Burp");
+                        else sink.accept(msg.getAsJsonObject("oracle"));
+                        continue;
+                    }
                     if (msg.has("id") && !msg.get("id").isJsonNull()) {
                         CompletableFuture<JsonObject> f = pending.remove(msg.get("id").getAsInt());
                         if (f != null) f.complete(msg);
@@ -158,6 +165,33 @@ public final class ServerClient implements AutoCloseable {
         } finally {
             pending.remove(id);
             pendingProc.remove(id);
+        }
+    }
+
+    // L4 oracle: questions from the server ({"oracle": {...}} lines) go to this sink (the OracleBroker);
+    // answers go back with oracleResult. Must not block (it runs on the stdout reader thread).
+    private volatile Consumer<JsonObject> oracleSink;
+
+    public void oracleSink(Consumer<JsonObject> sink) {
+        this.oracleSink = sink;
+    }
+
+    /** Answer the server's oracle question oid: {"oracleResult": oid, ok, value | error}. */
+    public void oracleResult(int oid, boolean ok, String value, String error) {
+        JsonObject o = new JsonObject();
+        o.addProperty("oracleResult", oid);
+        o.addProperty("ok", ok);
+        if (ok) o.addProperty("value", value);
+        else o.addProperty("error", error);
+        byte[] line = (GSON.toJson(o) + "\n").getBytes(StandardCharsets.UTF_8);
+        synchronized (this) {
+            if (stdin == null) return;
+            try {
+                stdin.write(line);
+                stdin.flush();
+            } catch (IOException e) {
+                log.accept("oracle answer not delivered: " + e.getMessage());
+            }
         }
     }
 

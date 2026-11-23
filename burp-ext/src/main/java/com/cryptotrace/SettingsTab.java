@@ -52,8 +52,17 @@ public final class SettingsTab {
         this.settings = settings;
         this.server = server;
         this.sessionKeys = sessionKeys;
+        // L4 browser oracle: server questions -> broker -> panel (bridge long-poll) -> answers back to the server
+        oracle = new OracleBroker(server::oracleResult);
+        oracle.enabled(settings.oracleEnabled());
+        oracle.minIntervalMs(settings.oracleIntervalMs());
+        server.oracleSink(oracle::submit);
         build();
     }
+
+    private final OracleBroker oracle;
+    private final JCheckBox oracleEnabled = new JCheckBox();
+    private final JTextField oracleInterval = new JTextField(5);
 
     public Component component() {
         return root;
@@ -197,11 +206,41 @@ public final class SettingsTab {
         decryptResponses.setToolTipText("Only for requests CryptoTrace encrypted; never in Proxy");
         decryptResponses.setSelected(settings.decryptResponses());
         decryptResponses.addActionListener(e -> settings.decryptResponses(decryptResponses.isSelected()));
+        oracleEnabled.setText("ACTIVE: Browser oracle -- run the page's own function to re-encrypt edited fields");
+        oracleEnabled.setToolTipText("For ciphers CryptoTrace can't re-implement (custom code). Runs page JavaScript in the inspected tab"
+                + " (no traffic to the target by itself). Needs the DevTools panel open with its oracle switch on. Default off.");
+        oracleEnabled.setSelected(settings.oracleEnabled());
+        oracleEnabled.addActionListener(e -> {
+            settings.oracleEnabled(oracleEnabled.isSelected());
+            oracle.enabled(oracleEnabled.isSelected());
+            append("browser oracle " + (oracleEnabled.isSelected() ? "ON (runs page code)" : "off"));
+        });
+        oracleInterval.setText(String.valueOf(settings.oracleIntervalMs()));
+        oracleInterval.setToolTipText("Minimum time between two calls into the page (throttle)");
+        oracleInterval.addActionListener(e -> applyOracleInterval());
+        oracleInterval.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override
+            public void focusLost(java.awt.event.FocusEvent e) {
+                applyOracleInterval();
+            }
+        });
         JPanel p = tabBody();
         p.add(row(decryptResponses));
+        p.add(row(oracleEnabled));
+        p.add(row(new JLabel("    Min interval (ms):"), oracleInterval, muted("one call at a time; Scanner-heavy use is throttled here")));
         p.add(row(muted("Plaintext request: header X-CT-Plain: 1, or right-click > Send to Repeater (Plain). "
                 + "A request that fails to encrypt is blocked, never sent in plaintext.")));
         return p;
+    }
+
+    private void applyOracleInterval() {
+        try {
+            int ms = Math.max(0, Integer.parseInt(oracleInterval.getText().trim()));
+            settings.oracleIntervalMs(ms);
+            oracle.minIntervalMs(ms);
+        } catch (NumberFormatException e) {
+            oracleInterval.setText(String.valueOf(settings.oracleIntervalMs()));
+        }
     }
 
     private void copyToken() {
@@ -241,7 +280,7 @@ public final class SettingsTab {
 
     /** Starts / stops the bridge to match the settings. Call once after construction, and on change. */
     public void restartBridge() {
-        if (bridge == null) bridge = new Bridge(settings::bridgeToken, this::receive, this::append);
+        if (bridge == null) bridge = new Bridge(settings::bridgeToken, this::receive, this::append, oracle);
         bridge.stop();
         if (!settings.bridgeEnabled()) {
             setBridgeStatus(false, "off");

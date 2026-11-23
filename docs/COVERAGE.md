@@ -32,7 +32,7 @@ Levels: auto > trace > encrypt-only > skip > locate > scan-only > none.
 | seed-class-method | no-api | SEED in a class method, key/IV on `this` | trace | trace | ok | traced: CryptoService.encrypt / window.__run<br>identified: seed-cbc/pkcs7<br>scan: SEED |
 | aes-module-site | no-api | aes-js inlined in an ES module (no global), CBC + PKCS#7, hex, key in module scope | trace | trace | ok | traced: Object.fromBytes / encryptBody / window.__run<br>identified: aes-256-cbc/pkcs7<br>scan: AES |
 | cjs-esm-wordarray | no-api | Same as cjs-esm (traced): key/IV are CryptoJS WordArrays, not bytes/strings | trace | trace | ok | traced: Object.stringify / WordArray.init.toString / Object.stringify / Object.toString / seal / window.__run<br>identified: aes-256-cbc/pkcs7<br>scan: SHA-1/SHA-256/Blowfish |
-| xor-custom | no-api | Home-made XOR + base64 "encryption" (no standard algorithm) | locate | locate | ok | traced: scramble / window.__run<br>selftest c1: not identified: none of 12 candidates reproduced the captured calls |
+| xor-custom | no-api | Home-made XOR + base64 "encryption" (no standard algorithm) | encrypt-only | encrypt-only | ok | traced: scramble / window.__run<br>re-encrypted by the page function (oracle) |
 | double-layer | transport | CryptoJS ciphertext wrapped in JSON, the whole JSON base64-encoded again | locate | locate | ok | traced: window.__run<br>scan: SHA-1/SHA-256/Blowfish |
 | resp-cjs-body | response | Response: whole body CryptoJS AES-CBC, decrypted by the page | auto | auto | ok | scan: SHA-1/SHA-256/Blowfish |
 | resp-wc-json-iv | response | Response: WebCrypto AES-CBC {iv, data} JSON, decrypted by the page | auto | auto | ok |  |

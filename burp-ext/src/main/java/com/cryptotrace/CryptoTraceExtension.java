@@ -14,7 +14,7 @@ public final class CryptoTraceExtension implements BurpExtension {
         ServerClient server = new ServerClient(line -> {
             api.logging().logToOutput(line);
             if (tab[0] != null) tab[0].append(line);
-        }, 5000);
+        }, 12000); // > the server's 8 s wait for a browser-oracle answer
         Crypto crypto = new Crypto(server);
         SessionKeys sessionKeys = new SessionKeys();
         tab[0] = new SettingsTab(settings, server, sessionKeys);

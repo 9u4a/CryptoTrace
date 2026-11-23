@@ -49,3 +49,24 @@ test('summary names the cipher the server identified from a traced function', as
   assert.equal(r.ok, true);
   assert.match(r.text, /identified c1=seed-cbc/);
 });
+
+test('oracle: next() long-polls with the token and returns the job; result() posts the answer', async () => {
+  const calls = [];
+  const fetchFn = async (url, init) => {
+    calls.push({ url, init });
+    if (url.includes('/oracle/next')) return { status: 200, json: async () => ({ enabled: true, job: { oid: 4, fn: 'f@u:1:1', value: 'hi' } }) };
+    return { status: 200, json: async () => ({ ok: true }) };
+  };
+  const n = await B.oracleNext(fetchFn, { port: 17777, token: 'abc' }, 15000);
+  assert.equal(calls[0].url, 'http://127.0.0.1:17777/oracle/next?wait=15000');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer abc');
+  assert.deepEqual({ enabled: n.enabled, oid: n.job.oid }, { enabled: true, oid: 4 });
+  await B.oracleResult(fetchFn, { port: 17777, token: 'abc' }, { oid: 4, ok: true, value: 'enc' });
+  assert.equal(calls[1].url, 'http://127.0.0.1:17777/oracle/result');
+  assert.deepEqual(JSON.parse(calls[1].init.body), { oid: 4, ok: true, value: 'enc' });
+  // Burp has the oracle off -> the panel learns it and backs off
+  const off = await B.oracleNext(async () => ({ status: 200, json: async () => ({ enabled: false }) }), { port: 1, token: 'x' }, 10);
+  assert.equal(off.enabled, false);
+  const down = await B.oracleNext(async () => { throw new Error('refused'); }, { port: 1, token: 'x' }, 10);
+  assert.match(down.error, /not reachable/);
+});

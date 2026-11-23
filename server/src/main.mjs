@@ -30,7 +30,7 @@ process.stderr.write(`[cryptotrace] server ${VERSION} ready (stdio)\n`);
 // and Burp answers (after asking the browser) with
 //   in : {"oracleResult": 7, "ok": true, "value": "..."} | {"oracleResult": 7, "ok": false, "error": "..."}
 // Requests are handled concurrently; responses carry their id, so order doesn't matter.
-const ORACLE_TIMEOUT_MS = Number(process.env.CT_ORACLE_TIMEOUT_MS) || 10000;
+const ORACLE_TIMEOUT_MS = Number(process.env.CT_ORACLE_TIMEOUT_MS) || 8000; // < Burp's 12 s call timeout
 let oseq = 0;
 const asked = new Map();
 const oracleCall = (job) => new Promise((resolve, reject) => {

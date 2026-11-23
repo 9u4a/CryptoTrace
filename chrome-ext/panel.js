@@ -106,7 +106,8 @@ async function attach() {
   });
   attached = true;
   // L3 function tracer (tracer.js): started per "unknown" row; its records go through addRecord like hooks'.
-  tracer = window.CryptoTraceTracer.createTracer({ cdp, emit: (r) => addRecord(r), keyOf: (t) => t.sessionId || 'main',
+  tracer = window.CryptoTraceTracer.createTracer({ cdp, keyOf: (t) => t.sessionId || 'main',
+    emit: (r, t) => { Object.defineProperty(r, '__target', { value: t, enumerable: false }); addRecord(r); },
     scriptsOf: (t) => scriptsBySession.get(t.sessionId || 'main') || [] });
   await cdp('Page.enable');
   await installInto(DEBUGGEE);
@@ -391,7 +392,10 @@ function renderDetail(rec) {
     ['candidates', rec.candidates && rec.candidates.length
       ? { value: rec.candidates.map((c) => `${c.scope} ${c.name} = ${c.value.encoding}:${c.value.value}`).join('\n') } : null, ''],
   ];
-  if (rec.lib === 'traced') rows.push(['next', { value: 'Send to Burp 하면 서버가 위 후보로 알고리즘·키·IV를 판정합니다 (로드 결과 identified).' }, '']);
+  if (rec.lib === 'traced') {
+    rows.push(['oracle', { value: rec.oracleKey ? '등록됨 — 판정이 안 되면 Burp 재암호화 때 이 함수를 직접 호출 (Burp Options + 패널 "오라클" 켜기)' : '등록 안 됨 (함수 참조를 찾지 못함)' }, '']);
+    rows.push(['next', { value: 'Send to Burp 하면 서버가 위 후보로 알고리즘·키·IV를 판정합니다 (로드 결과 identified).' }, '']);
+  }
   if (rec.format) rows.splice(1, 0, ['format', { value: rec.format }, '']);
   // Skip the DOM rebuild when nothing changed (refreshApply runs every second; keeps text selection alive).
   const sig = rec.n + JSON.stringify(rows.map((r) => r[1] && r[1].value));
@@ -533,6 +537,56 @@ el('burpSave').onclick = async () => {
 el('autoSend').onchange = () => {
   burp.autoSend = el('autoSend').checked;
   chrome.storage.local.set({ autoSend: burp.autoSend });
+};
+
+/* ------------------------- L4 browser oracle ------------------------- */
+// ACTIVE, off on every DevTools session: while on (and Hook ON), long-poll Burp for jobs -- "re-encrypt this edited
+// plaintext with page function X" -- run that registered function in the page (tracer.js oracleExpression) and
+// post the result. One job at a time; Burp throttles (Options > min interval).
+let oracleRunning = false;
+let oracleState = '';
+let oracleDone = 0;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function oracleSay(state, msg, isErr) {
+  if (state === oracleState) return; // no status spam while polling
+  oracleState = state;
+  setStatus(msg, isErr);
+}
+async function oracleLoop() {
+  if (oracleRunning) return;
+  oracleRunning = true;
+  try {
+    while (el('oracleOn').checked) {
+      if (!attached) { oracleSay('detached', '오라클: Hook ON 상태에서만 동작합니다', true); await sleep(2000); continue; }
+      const r = await CryptoTraceBridge.oracleNext(fetch, burp, 15000);
+      if (r.error) { oracleSay('err:' + r.error, '오라클: ' + r.error, true); await sleep(3000); continue; }
+      if (!r.enabled) { oracleSay('off', '오라클: Burp > CryptoTrace > Options에서 Browser oracle을 켜세요', true); await sleep(3000); continue; }
+      oracleSay('ready', '오라클 대기 중 (Burp가 재암호화할 때 페이지 함수를 호출합니다)');
+      if (!r.job) continue;
+      const job = r.job;
+      const owner = records.find((x) => x.lib === 'traced' && x.oracleKey === job.fn);
+      try {
+        const res = await cdp('Runtime.evaluate', { expression: CryptoTraceTracer.oracleExpression(job.fn, job.value),
+          awaitPromise: true, returnByValue: true }, (owner && owner.__target) || DEBUGGEE);
+        if (res.exceptionDetails) throw new Error((res.exceptionDetails.exception && res.exceptionDetails.exception.description) || 'page function threw');
+        await CryptoTraceBridge.oracleResult(fetch, burp, { oid: job.oid, ok: true, value: String(res.result.value) });
+        oracleDone++;
+        oracleState = '';
+        oracleSay('done' + oracleDone, `오라클: 페이지 함수로 ${oracleDone}건 재암호화 (${String(job.fn).split('@')[0]})`);
+      } catch (e) {
+        await CryptoTraceBridge.oracleResult(fetch, burp, { oid: job.oid, ok: false, error: e.message });
+        oracleState = '';
+        oracleSay('fail', '오라클 실패: ' + e.message, true);
+      }
+    }
+  } finally {
+    oracleRunning = false;
+    oracleState = '';
+  }
+}
+el('oracleOn').onchange = () => {
+  if (el('oracleOn').checked) oracleLoop();
+  else setStatus('오라클 꺼짐');
 };
 
 async function sendToBurp(manual) {

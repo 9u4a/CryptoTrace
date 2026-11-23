@@ -86,4 +86,19 @@ class ServerClientTest {
             assertEquals("0.2.0", client.call("health", null).get("version").getAsString(), "restart #" + i);
         }
     }
+
+    @Test
+    void oracleQuestionsFromTheServerAreAnsweredAndTheRequestCompletes() throws Exception {
+        java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("ct-oracle");
+        java.nio.file.Path cfg = dir.resolve("o.json");
+        java.nio.file.Files.writeString(cfg, "{\"schemaVersion\":1,\"profile\":\"orc\",\"scope\":[{\"host\":\"api.test\",\"pathRegex\":\".*\"}],"
+                + "\"keys\":{},\"ciphers\":{\"c1\":{\"oracle\":{\"fn\":\"f@u:1:1\"}}},"
+                + "\"apply\":{\"request\":[{\"in\":\"json\",\"path\":\"$.z\",\"cipher\":\"c1\"}],\"response\":[]},\"integrity\":[]}");
+        // the sink stands in for the broker + browser: answer each question with "enc(<value>)"
+        client.oracleSink(q -> client.oracleResult(q.get("oid").getAsInt(), true, "enc(" + q.get("value").getAsString() + ")", null));
+        client.load(List.of(cfg.toString()));
+        JsonObject args = JsonParser.parseString("{\"host\":\"api.test\",\"port\":443,\"request\":{\"method\":\"POST\",\"path\":\"/p\",\"headers\":[],\"body\":\"{\\\"z\\\":\\\"hi\\\"}\"}}").getAsJsonObject();
+        JsonObject res = client.call("encryptRequest", args);
+        assertEquals("{\"z\":\"enc(hi)\"}", res.getAsJsonObject("request").get("body").getAsString());
+    }
 }

@@ -93,6 +93,29 @@ public final class Settings {
         prefs.setBoolean(DECRYPT_RESPONSES, v);
     }
 
+    private static final String ORACLE_ENABLED = "cryptotrace.oracle.enabled";
+    private static final String ORACLE_INTERVAL = "cryptotrace.oracle.intervalMs";
+
+    /** L4 browser oracle: let the page's own function re-encrypt edited fields. ACTIVE (runs page code). Default OFF. */
+    public boolean oracleEnabled() {
+        Boolean v = prefs.getBoolean(ORACLE_ENABLED);
+        return v != null && v;
+    }
+
+    public void oracleEnabled(boolean v) {
+        prefs.setBoolean(ORACLE_ENABLED, v);
+    }
+
+    /** Minimum time between two oracle calls into the page (throttle). Default 100 ms. */
+    public int oracleIntervalMs() {
+        Integer v = prefs.getInteger(ORACLE_INTERVAL);
+        return v == null ? 100 : Math.max(0, v);
+    }
+
+    public void oracleIntervalMs(int v) {
+        prefs.setInteger(ORACLE_INTERVAL, Math.max(0, v));
+    }
+
     /** Browser bridge on 127.0.0.1 (receive configs from the Chrome extension). Default on. */
     public boolean bridgeEnabled() {
         Boolean v = prefs.getBoolean(BRIDGE_ENABLED);

@@ -94,3 +94,12 @@ through the panel pipeline and the crypto server (needs Chrome; `CHROME=<path>` 
 `output/coverage-report.md` (`docs/COVERAGE.md` with `--docs`). Add a case for every new target shape you support,
 and for every limit you document. The `apply` location `cookie` (one cookie in the Cookie header, `urlEncoded`
 learned at capture) has no Scanner insertion point yet.
+
+## Browser oracle (L4)
+For a traced function that no built-in cipher reproduces, the cipher spec carries `oracle: {fn, frame}` (fn =
+`name@url:line:col`, registered in the page by `tracer.js register`). Flow: `server/src/engine.mjs handleAsync`
+asks for the value -> `main.mjs` writes `{oracle: {...}}` -> `burp-ext ServerClient.oracleSink` ->
+`OracleBroker` (off by default, min interval) -> bridge `GET /oracle/next` long-poll -> panel runs
+`CryptoTraceTracer.oracleExpression` in the page -> `POST /oracle/result` -> `{oracleResult}` back to the server.
+Encrypt only (decrypt shows `ct-keep:`); timeouts: server 8 s < Burp call 12 s. The coverage runner stands in for
+Burp + panel with the same `oracleExpression`.

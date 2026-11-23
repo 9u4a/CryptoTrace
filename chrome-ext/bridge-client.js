@@ -61,5 +61,34 @@
     return r.ok ? { ok: true, text: `Burp: connected (127.0.0.1:${Number(opts.port) || DEFAULT_PORT})` } : r;
   }
 
-  window.CryptoTraceBridge = { DEFAULT_PORT, endpoint, summarize, send, ping };
+  // ---- L4 browser oracle: Burp hands out jobs ({oid, fn, value}) the page's own function must compute ----
+  /** Long-poll Burp for the next job. -> {enabled, job?} or {error}. */
+  async function oracleNext(fetchFn, { port, token }, waitMs) {
+    if (!token) return { error: 'Burp token not set' };
+    try {
+      const res = await fetchFn(endpoint(port, '/oracle/next?wait=' + Math.max(0, Number(waitMs) || 0)), {
+        method: 'GET', headers: { Authorization: 'Bearer ' + token },
+      });
+      if (res.status === 401) return { error: 'Burp rejected the token' };
+      const body = await res.json().catch(() => null);
+      if (!body) return { error: 'HTTP ' + res.status };
+      return { enabled: !!body.enabled, job: body.job || null };
+    } catch (_) {
+      return { error: `Burp not reachable on 127.0.0.1:${Number(port) || DEFAULT_PORT}` };
+    }
+  }
+
+  /** Post one job's answer: {oid, ok, value} | {oid, ok: false, error}. */
+  async function oracleResult(fetchFn, { port, token }, answer) {
+    try {
+      await fetchFn(endpoint(port, '/oracle/result'), {
+        method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(answer),
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  window.CryptoTraceBridge = { DEFAULT_PORT, endpoint, summarize, send, ping, oracleNext, oracleResult };
 })();
