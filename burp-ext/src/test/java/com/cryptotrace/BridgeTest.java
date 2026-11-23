@@ -14,6 +14,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -84,9 +85,24 @@ class BridgeTest {
         JsonObject cfg = JsonParser.parseString(
                 "{\"profile\":\"captured-2026-11-16\",\"scope\":[{\"host\":\"*.shop.test\"}],"
                         + "\"ciphers\":{\"c1\":{\"custom\":\"custom/rabbit.js\"}}}").getAsJsonObject();
-        assertEquals("captured-2026-11-16__.shop.test.json", Bridge.fileNameFor(cfg));
-        assertEquals("etc_passwd.json", Bridge.fileNameFor(JsonParser.parseString("{\"profile\":\"../etc/passwd\"}").getAsJsonObject()));
+        // one file per target (host + port), not per capture date: a new capture replaces the previous one
+        assertEquals("captured__.shop.test.json", Bridge.fileNameFor(cfg));
+        JsonObject withPort = JsonParser.parseString("{\"profile\":\"captured-2026-11-23\",\"scope\":[{\"host\":\"127.0.0.1\",\"port\":8088}]}").getAsJsonObject();
+        assertEquals("captured_127.0.0.1_8088.json", Bridge.fileNameFor(withPort));
+        assertEquals("captured_127.0.0.1_8088.json", Bridge.fileNameFor(JsonParser.parseString(
+                "{\"profile\":\"captured-2026-11-19\",\"scope\":[{\"host\":\"127.0.0.1\",\"port\":8088}]}").getAsJsonObject()));
+        assertEquals("received.json", Bridge.fileNameFor(JsonParser.parseString("{\"profile\":\"../etc/passwd\"}").getAsJsonObject()));
         assertTrue(Bridge.usesCustomCode(cfg));
         assertFalse(Bridge.usesCustomCode(JsonParser.parseString("{\"ciphers\":{\"c1\":{\"alg\":\"aes-256-cbc\"}}}")));
+    }
+
+    @Test
+    void scopeKeyIdentifiesTheTarget() {
+        JsonObject a = JsonParser.parseString("{\"scope\":[{\"host\":\"127.0.0.1\",\"port\":8088,\"pathRegex\":\".*\"}]}").getAsJsonObject();
+        JsonObject b = JsonParser.parseString("{\"scope\":[{\"host\":\"127.0.0.1\",\"port\":8088}],\"profile\":\"other\"}").getAsJsonObject();
+        JsonObject c = JsonParser.parseString("{\"scope\":[{\"host\":\"127.0.0.1\",\"port\":8089}]}").getAsJsonObject();
+        assertEquals(Bridge.scopeKey(a), Bridge.scopeKey(b));
+        assertNotEquals(Bridge.scopeKey(a), Bridge.scopeKey(c));
+        assertEquals("", Bridge.scopeKey(JsonParser.parseString("{}").getAsJsonObject()));
     }
 }

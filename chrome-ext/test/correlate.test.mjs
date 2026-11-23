@@ -131,3 +131,19 @@ test('a ciphertext in a URL-encoded cookie -> apply {in:cookie, name, urlEncoded
   correlate({ lib: 'transport', op: 'fetch', url: '/api', headers: [], body: { kind: 'none' }, cookies: [['sid', 'x'], ['enc', encodeURIComponent(ct)]] }, [rec]);
   assert.deepEqual({ ...rec.apply }, { in: 'cookie', name: 'enc', at: '/api', urlEncoded: true });
 });
+
+test('a decrypt recorded AFTER its response (worker decrypts later) is still placed: correlateLate', () => {
+  const sandbox = { window: {}, URL };
+  vm.runInNewContext(fs.readFileSync(path.join(HERE, '../correlate.js'), 'utf8'), sandbox);
+  const { correlate, correlateLate } = sandbox.window;
+  const iv = Buffer.from('0102030405060708090a0b0c', 'hex');
+  const ct = Buffer.from('f1e2d3c4b5a6978877665544332211000f1e2d3c', 'hex'); // leakcheck:allow
+  const records = [];
+  const resp = { lib: 'transport', op: 'response', url: '/api/profile', body: { kind: 'text', sample: Buffer.concat([iv, ct]).toString('base64') } };
+  correlate(resp, records);
+  records.push(resp);
+  const dec = { lib: 'webcrypto', op: 'decrypt', iv: { encoding: 'base64', value: iv.toString('base64') }, input: { encoding: 'base64', value: ct.toString('base64') } };
+  assert.equal(dec.applyResponse, undefined);
+  correlateLate(dec, records);
+  assert.deepEqual({ ...dec.applyResponse }, { in: 'body', at: '/api/profile', ivPrefix: 12 });
+});

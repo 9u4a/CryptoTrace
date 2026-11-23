@@ -32,6 +32,10 @@
   button.on { border-color: var(--on); color: var(--on); font-weight: 600; }
   .sep { flex: 1; }
   #status { color: var(--muted); }
+  #statusbar { cursor: pointer; }
+  #statusCount { color: #d93025; margin-right: 6px; }
+  #statusLog { margin: 0; max-height: 140px; overflow: auto; border-top: 1px solid var(--border); padding: 4px 8px; font: 11px/1.5 Consolas, monospace; white-space: pre-wrap; }
+  #statusLog .err { color: #d93025; }
   #statusbar { background: var(--toolbar); border-top: 1px solid var(--border); padding: 4px 8px; min-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
   body.theme-dark button.primary { color: #202124; }
@@ -116,7 +120,8 @@
   <div class="kv" id="dBody"></div>
 </div>
 </div>
-<div id="statusbar"><span id="status"></span></div>
+<pre id="statusLog" hidden></pre>
+<div id="statusbar" title="클릭: 최근 메시지 기록"><span id="statusCount"></span><span id="status"></span></div>
 <script src="config-builder.js"></script>
 <script src="correlate.js"></script>
 <script src="signatures.js"></script>

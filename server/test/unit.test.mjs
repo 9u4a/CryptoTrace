@@ -639,3 +639,14 @@ test('apply in:cookie decrypts/encrypts one cookie in the Cookie header; urlEnco
   assert.equal(eng.handle({ op: 'decrypt', profile: 'rt', cipher: 'c1', value: decodeURIComponent(sent) }).value, '{"t":"secret;x"}');
   cleanup();
 });
+
+test('two loaded profiles with the same scope: load warns which one wins', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-ovl-'));
+  const cfg = (name) => ({ schemaVersion: 1, profile: name, scope: [{ host: '127.0.0.1', port: 8088, pathRegex: '.*' }], keys: {}, ciphers: {}, apply: { request: [], response: [] }, integrity: [] });
+  const a = path.join(dir, 'a.json'), b = path.join(dir, 'b.json');
+  fs.writeFileSync(a, JSON.stringify(cfg('captured-2026-11-19')));
+  fs.writeFileSync(b, JSON.stringify(cfg('captured-2026-11-23')));
+  const res = createEngine().handle({ op: 'load', files: [a, b] }).results;
+  assert.match((res[1].warnings || []).join('\n'), /same scope as "captured-2026-11-19".*127\.0\.0\.1:8088.*first loaded/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

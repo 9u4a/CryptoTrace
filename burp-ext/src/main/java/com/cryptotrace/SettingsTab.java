@@ -286,9 +286,23 @@ public final class SettingsTab {
         java.nio.file.Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
                 java.nio.file.StandardCopyOption.ATOMIC_MOVE);
         String path = file.toString();
+        // Any other received config for the same target (e.g. an older capture saved under the old per-date name)
+        // leaves the list: the server would otherwise apply whichever loaded first. The file itself stays.
+        String key = Bridge.scopeKey(cfg);
+        List<String> replaced = new ArrayList<>();
+        for (int i = 0; i < configs.size(); i++) {
+            String other = configs.get(i);
+            if (other.equals(path) || !java.nio.file.Path.of(other).toAbsolutePath().startsWith(dir.toAbsolutePath())) continue;
+            try {
+                JsonObject o = com.google.gson.JsonParser.parseString(java.nio.file.Files.readString(java.nio.file.Path.of(other))).getAsJsonObject();
+                if (!key.isEmpty() && key.equals(Bridge.scopeKey(o))) replaced.add(other);
+            } catch (Exception ignored) { /* unreadable: leave it */ }
+        }
         SwingUtilities.invokeAndWait(() -> {
+            for (String r : replaced) configs.removeElement(r);
             if (!configs.contains(path)) configs.addElement(path);
         });
+        for (String r : replaced) append("bridge: replaced older capture for " + key + ": " + java.nio.file.Path.of(r).getFileName());
         List<String> lines = Collections.synchronizedList(new ArrayList<>());
         sink = lines;
         boolean ok;

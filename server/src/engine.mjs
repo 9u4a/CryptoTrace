@@ -28,9 +28,18 @@ export function createEngine() {
       const results = files.map((file) => {
         try {
           const p = loadProfile(file, env);
+          // A request goes to the FIRST profile whose scope matches: one loaded later for the same target is
+          // never used. Say so (typically an old capture still in the list).
+          const key = (s) => `${s.host}:${s.port ?? '*'}|${s.pathRegex}`;
+          const shadow = loaded.find((q) => q.scope.some((s) => p.scope.some((t) => key(s) === key(t))));
+          const warnings = [...(p.warnings || [])];
+          if (shadow) {
+            const s = p.scope[0];
+            warnings.push(`same scope as "${shadow.name}" (${s.host}${s.port != null ? ':' + s.port : ''}): the first loaded profile wins, so this one is not used -- remove the older config`);
+          }
           loaded.push(p);
           const scope = p.scope.map((s) => ({ host: s.host, port: s.port, pathRegex: s.pathRegex }));
-          return { file, profile: p.name, selftest: selftest(p), captures: p.captures, scope, warnings: p.warnings, identified: p.identified, oracles: p.oracles };
+          return { file, profile: p.name, selftest: selftest(p), captures: p.captures, scope, warnings, identified: p.identified, oracles: p.oracles };
         } catch (e) {
           return { file, error: e.message };
         }

@@ -277,10 +277,20 @@
     // Emitting a rule per capture makes the server stack encryption layers on re-encrypt
     // (each adds ~1.33x via base64 -> NN-fold body blow-up and a broken request). The
     // first capture at a location defines the cipher; later ones only add selftest vectors.
-    const ruleByLoc = new Map(); // request "in|path|name" -> cipher id
-    const ruleByLocResp = new Map(); // response "in|path|name" -> cipher id
+    // A location (in|path|name) can be used by several endpoints. Per side: location -> [{id, at, keyVal, rule}].
+    // Same endpoint -> same cipher (a different key there = a per-request key); another endpoint with the same
+    // key -> shares that cipher and rule; another endpoint with another key -> its own cipher, and every rule at
+    // that location is then pinned to its endpoint (pathRegex) so each request gets the right one.
+    const locs = { request: new Map(), response: new Map() };
     const keyValOf = new Map(); // cipher id -> the key value of the capture that defined it
     const locKeyOf = (a) => (a ? `${a.in}|${a.path || ''}|${a.name || ''}` : null);
+    const findLoc = (side, a, keyVal) => {
+      const list = (a && locs[side].get(locKeyOf(a))) || [];
+      const sameAt = list.find((e) => e.at === a.at);
+      if (sameAt) return { e: sameAt, sameAt: true };
+      const sameKey = keyVal != null && list.find((e) => e.keyVal === keyVal);
+      return sameKey ? { e: sameKey, sameAt: false } : null;
+    };
     const keyNameFor = (entry) => {
       const sig = JSON.stringify(entry);
       for (const [n, e] of Object.entries(cfg.keys)) if (JSON.stringify(e) === sig) return n;
@@ -307,15 +317,14 @@
 
       // Reuse the cipher already chosen for this apply location (request or response) instead of
       // stacking a new one per capture. The first capture at a location defines the cipher.
-      const locKey = locKeyOf(r.apply);
-      const locKeyResp = locKeyOf(r.applyResponse);
+      const now = r.key && r.key.value != null ? String(r.key.value) : null;
+      const hit = (r.apply && findLoc('request', r.apply, now)) || (r.applyResponse && findLoc('response', r.applyResponse, now));
       let id;
       let otherKey = false; // this capture used a different key than the one the location's cipher holds
-      if ((locKey && ruleByLoc.has(locKey)) || (locKeyResp && ruleByLocResp.has(locKeyResp))) {
-        id = locKey && ruleByLoc.has(locKey) ? ruleByLoc.get(locKey) : ruleByLocResp.get(locKeyResp);
+      if (hit) {
+        id = hit.e.id;
         const seen = keyValOf.get(id);
-        const now = r.key && r.key.value != null ? String(r.key.value) : null;
-        if (seen != null && now != null && seen !== now && cfg.ciphers[id].alg !== 'rsa') {
+        if (hit.sameAt && seen != null && now != null && seen !== now && cfg.ciphers[id].alg !== 'rsa') {
           otherKey = true;
           if (!cfg.ciphers[id]._perRequestKey) {
             cfg.ciphers[id]._perRequestKey = true;
@@ -397,8 +406,16 @@
       }
       // (encoding / ivPrefix placement details live in the cipher spec, not the rule)
       const rule = (a) => { const { at, encoding, ivPrefix, ...rest } = a; const out = { ...rest, cipher: id }; Object.defineProperty(out, '_at', { value: at, enumerable: false }); return out; };
-      if (locKey && !ruleByLoc.has(locKey)) { cfg.apply.request.push(rule(r.apply)); ruleByLoc.set(locKey, id); }
-      if (locKeyResp && !ruleByLocResp.has(locKeyResp)) { cfg.apply.response.push(rule(r.applyResponse)); ruleByLocResp.set(locKeyResp, id); }
+      for (const [side, a] of [['request', r.apply], ['response', r.applyResponse]]) {
+        if (!a) continue;
+        const k = locKeyOf(a);
+        if (!locs[side].has(k)) locs[side].set(k, []);
+        const list = locs[side].get(k);
+        if (list.some((e) => e.id === id)) { if (!list.some((e) => e.at === a.at)) list.push({ id, at: a.at, keyVal: now, rule: null }); continue; }
+        const ru = rule(a);
+        cfg.apply[side].push(ru);
+        list.push({ id, at: a.at, keyVal: now, rule: ru });
+      }
       // selftest vector when we have both plaintext and ciphertext
       if (otherKey) continue; // a vector made with another key would fail this cipher's selftest
       // RSA encryption is randomized: a vector can only be checked by decrypting, which needs the private key.
@@ -481,6 +498,14 @@
         rule._note = 'DRAFT: set "input" to the real template. Captured input was: ' + JSON.stringify(String((r.input && r.input.value) || '').slice(0, 120));
       }
       cfg.integrity.push(rule);
+    }
+
+    // One location used by different ciphers at different endpoints: pin each of those rules to its endpoint.
+    for (const side of ['request', 'response']) {
+      for (const list of locs[side].values()) {
+        if (new Set(list.map((e) => e.id)).size < 2) continue;
+        for (const e of list) if (e.rule && e.at) e.rule.pathRegex = pathRegexFor(e.at);
+      }
     }
 
     // A whole-body rule and JSON/form-field rules in one direction rewrite the same body. When they came from

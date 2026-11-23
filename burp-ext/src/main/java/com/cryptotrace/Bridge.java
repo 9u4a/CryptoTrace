@@ -169,19 +169,29 @@ public final class Bridge {
     }
 
     /** File name for a received config: profile (+ first scope host), filesystem-safe. */
+    /**
+     * One file per target (first scope entry's host + port), not per capture: a new Send to Burp for the same
+     * target replaces the previous capture. (Per-date names left old captures loaded beside the new one, and the
+     * server uses the first profile whose scope matches -- the stale one.)
+     */
     static String fileNameFor(JsonObject cfg) {
-        String profile = cfg.has("profile") && cfg.get("profile").isJsonPrimitive() ? cfg.get("profile").getAsString() : "received";
-        String host = "";
-        if (cfg.has("scope") && cfg.get("scope").isJsonArray() && !cfg.getAsJsonArray("scope").isEmpty()) {
-            JsonElement s = cfg.getAsJsonArray("scope").get(0);
-            if (s.isJsonObject() && s.getAsJsonObject().has("host") && s.getAsJsonObject().get("host").isJsonPrimitive()) {
-                host = s.getAsJsonObject().get("host").getAsString();
-            }
-        }
-        String name = (profile + (host.isEmpty() ? "" : "_" + host)).replaceAll("[^A-Za-z0-9._-]", "_");
-        name = name.replaceAll("^[._]+", "");
+        String key = scopeKey(cfg);
+        if (key.isEmpty()) return "received.json";
+        String name = ("captured_" + key.replace(':', '_')).replaceAll("[^A-Za-z0-9._-]", "_");
         if (name.length() > 100) name = name.substring(0, 100);
-        return (name.isEmpty() ? "received" : name) + ".json";
+        return name + ".json";
+    }
+
+    /** "host:port" (or "host") of the config's first scope entry; "" when it has none. */
+    static String scopeKey(JsonObject cfg) {
+        if (!cfg.has("scope") || !cfg.get("scope").isJsonArray() || cfg.getAsJsonArray("scope").isEmpty()) return "";
+        JsonElement s = cfg.getAsJsonArray("scope").get(0);
+        if (!s.isJsonObject()) return "";
+        JsonObject o = s.getAsJsonObject();
+        String host = o.has("host") && o.get("host").isJsonPrimitive() ? o.get("host").getAsString().toLowerCase() : "";
+        if (host.isEmpty()) return "";
+        String port = o.has("port") && o.get("port").isJsonPrimitive() ? o.get("port").getAsString() : "";
+        return port.isEmpty() ? host : host + ":" + port;
     }
 
     private static byte[] readCapped(InputStream in) throws IOException {

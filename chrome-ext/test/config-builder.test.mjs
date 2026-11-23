@@ -608,3 +608,29 @@ test('HMAC input template is inferred from the request that carried the signatur
   assert.equal(cfg.integrity[1].input, '{json:$.data}|{header:X-Ts}');
   assert.doesNotMatch(cfg.integrity[0]._note, /DRAFT/);
 });
+
+test('the same location at two endpoints with different keys -> two ciphers, each rule pinned to its endpoint', () => {
+  const buildConfig = loadBuilder();
+  const mk = (keyByte, at, op = 'decrypt') => {
+    const key = Buffer.alloc(32, keyByte), iv = Buffer.alloc(16, keyByte);
+    const c = crypto.createCipheriv('aes-256-cbc', key, iv);
+    const ct = Buffer.concat([c.update(`{"k":${keyByte}}`), c.final()]).toString('base64');
+    return { lib: 'webcrypto', op, alg: { name: 'AES-CBC' }, keySource: 'importKey', key: { encoding: 'base64', value: b64(key) },
+      iv: { encoding: 'base64', value: b64(iv) }, input: { encoding: 'base64', value: ct }, output: { encoding: 'base64', value: b64(Buffer.from(`{"k":${keyByte}}`)) },
+      applyResponse: { in: 'body', at }, frame: 'http://127.0.0.1:8088/' };
+  };
+  const cfg = buildConfig([mk(1, '/api/login'), mk(2, '/api/profile'), mk(1, '/api/login')]);
+  const resp = JSON.parse(JSON.stringify(cfg.apply.response));
+  assert.equal(resp.length, 2, JSON.stringify(resp));
+  assert.deepEqual(resp.map((r) => r.pathRegex), ['^/api/login$', '^/api/profile$']);
+  assert.notEqual(resp[0].cipher, resp[1].cipher);
+  assert.ok(!Object.values(cfg.ciphers).some((c) => c._perRequestKey), 'different endpoints are not a per-request key');
+  const res = loadIntoEngine(cfg);
+  assert.equal(res.error, undefined, res.error);
+  assert.ok(res.selftest.every((t) => t.ok), JSON.stringify(res.selftest));
+
+  // same field + same key at two endpoints -> one shared rule (no pin)
+  const shared = buildConfig([mk(3, '/a'), mk(3, '/b')]);
+  assert.equal(shared.apply.response.length, 1);
+  assert.equal(shared.apply.response[0].pathRegex, undefined);
+});

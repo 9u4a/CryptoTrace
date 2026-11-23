@@ -26,11 +26,36 @@ function applyTheme() {
 }
 applyTheme();
 
+// The status bar shows the latest message; every message is kept (newest first) and the bar opens the log,
+// so an error replaced by a later message can still be read. Errors not yet seen are counted on the bar.
+const statusHistory = [];
+let unseenErrors = 0;
+function renderStatusLog() {
+  const log = el('statusLog');
+  log.textContent = '';
+  for (const h of statusHistory) {
+    const line = document.createElement('div');
+    if (h.err) line.className = 'err';
+    line.textContent = '[' + h.t + '] ' + h.msg;
+    log.appendChild(line);
+  }
+}
 function setStatus(msg, isErr) {
   statusEl.textContent = msg || '';
   statusEl.title = msg || '';
   statusEl.style.color = isErr ? '#d93025' : 'var(--muted)';
+  if (!msg) return;
+  statusHistory.unshift({ t: new Date().toLocaleTimeString(), msg, err: !!isErr });
+  if (statusHistory.length > 50) statusHistory.pop();
+  if (isErr && el('statusLog').hidden) unseenErrors++;
+  el('statusCount').textContent = unseenErrors ? '오류 ' + unseenErrors + '건 ▾' : '';
+  if (!el('statusLog').hidden) renderStatusLog();
 }
+el('statusbar').onclick = () => {
+  const log = el('statusLog');
+  log.hidden = !log.hidden;
+  if (!log.hidden) { unseenErrors = 0; el('statusCount').textContent = ''; renderStatusLog(); }
+};
 
 /* ------------------------- CDP helpers ------------------------- */
 function cdp(method, params = {}, target = DEBUGGEE) {
@@ -222,6 +247,7 @@ function addRecord(rec) {
   if (rec.lib === 'origin') return addOrigin(rec);
   rec.n = records.length + 1;
   if (rec.lib === 'transport') window.correlate(rec, records); // correlate.js
+  else if (rec.op === 'decrypt') window.correlateLate(rec, records); // decrypted after its response arrived
   records.push(rec);
   renderRow(rec);
   scheduleAutoSend();

@@ -34,6 +34,7 @@ function replay(mods, records) {
   for (const r of records) {
     if (r.lib === 'origin') { if (!mods.isExplained(r, seen)) unknown.push(r); continue; }
     if (r.lib === 'transport') mods.correlate(r, seen);
+    else if (r.op === 'decrypt') mods.correlateLate(r, seen);
     seen.push(r);
   }
   return { seen, unknown };

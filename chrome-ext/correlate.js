@@ -61,7 +61,16 @@
   // or IV-prefixed). Returns extra placement fields, or null.
   function placeIn(value, rec, key) {
     const target = rec[key] && rec[key].value;
-    if (cipherMatch(value, target)) return {};
+    // A text hit inside a LONGER value can still be an IV glued in front (a 12-byte IV keeps base64 aligned),
+    // so look at the bytes too; an exact text hit needs nothing more.
+    if (cipherMatch(value, target)) {
+      const v = String(value);
+      if (v === target || _urldec(v) === target || v.replace(/=+$/, '') === String(target).replace(/=+$/, '')) return {};
+      return byteMatch(value, rec, key) || {};
+    }
+    return byteMatch(value, rec, key);
+  }
+  function byteMatch(value, rec, key) {
     const ct = recordedBytes(rec[key]);
     if (!ct || ct.length < MIN_CT) return null;
     for (const { encoding, bytes } of readings(value)) {
@@ -151,6 +160,18 @@
     return records.some((r) => same(r.apply) || same(r.applyWebSocket) || same(ivAt(r)));
   }
 
+  // A decrypt that is recorded after its response arrived (the page hands the response to a Worker, or decrypts
+  // it in a later task) found nothing to match when the response came in: match it against recent responses now.
+  function correlateLate(rec, records) {
+    if (!rec || rec.op !== 'decrypt' || !rec.input || !rec.input.value || rec.applyResponse) return;
+    const responses = records.filter((r) => r.lib === 'transport' && r.op === 'response').slice(-30).reverse();
+    for (const t of responses) {
+      place(t, [rec], 'input', 'applyResponse');
+      if (rec.applyResponse) return;
+    }
+  }
+
   window.correlate = correlate;
+  window.correlateLate = correlateLate;
   window.isExplained = isExplained;
 })();
