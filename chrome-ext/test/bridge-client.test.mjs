@@ -41,3 +41,11 @@ test('ping reports the port', async () => {
   const r = await B.ping(reply(200, { ok: true, name: 'CryptoTrace' }), { port: 18000, token: 'x' });
   assert.equal(r.text, 'Burp: connected (127.0.0.1:18000)');
 });
+
+test('summary names the cipher the server identified from a traced function', async () => {
+  const fetchFn = async () => ({ status: 200, json: async () => ({ ok: true, status: 'running - 1 config(s)',
+    log: ['loaded p - selftest: c1=OK', '  IDENTIFIED c1 = seed-cbc key=k1 iv=base64:Y3Q= padding=pkcs7'] }) });
+  const r = await B.send(fetchFn, { port: 17777, token: 'abc' }, { ciphers: { c1: {} } });
+  assert.equal(r.ok, true);
+  assert.match(r.text, /identified c1=seed-cbc/);
+});

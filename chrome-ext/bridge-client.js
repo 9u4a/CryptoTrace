@@ -23,7 +23,10 @@
     }
     const errors = log.filter((l) => /^ERROR /.test(l));
     const tests = pass + fail ? ` · selftest ${pass}/${pass + fail}` : '';
-    if (reply.ok) return { ok: true, text: 'Burp: loaded' + tests + (reply.status ? ` · ${reply.status}` : '') };
+    // ciphers the server picked from a traced function's candidates (Burp log: "  IDENTIFIED c1 = seed-cbc ...")
+    const ids = log.map((l) => String(l).match(/IDENTIFIED (\S+) = (\S+)/)).filter(Boolean).map((m) => `${m[1]}=${m[2]}`);
+    const idText = ids.length ? ` · identified ${ids.join(', ')}` : '';
+    if (reply.ok) return { ok: true, text: 'Burp: loaded' + tests + idText + (reply.status ? ` · ${reply.status}` : '') };
     const why = errors.length ? errors[errors.length - 1].replace(/^ERROR /, '') : reply.status || 'load failed';
     return { ok: false, text: 'Burp: ' + why + tests };
   }

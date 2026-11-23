@@ -411,6 +411,21 @@ public final class SettingsTab {
                 if (o.has("warnings") && !o.get("warnings").isJsonNull()) {
                     for (JsonElement w : o.getAsJsonArray("warnings")) append("  WARN " + w.getAsString());
                 }
+                // ciphers the server identified from a traced page function's candidates (0.5.0)
+                if (o.has("identified") && o.get("identified").isJsonArray()) {
+                    for (JsonElement ie : o.getAsJsonArray("identified")) {
+                        JsonObject id = ie.getAsJsonObject();
+                        StringBuilder line = new StringBuilder("  IDENTIFIED ").append(id.get("cipher").getAsString())
+                                .append(" = ").append(id.get("alg").getAsString()).append(" key=").append(id.get("key").getAsString());
+                        if (id.has("iv") && id.get("iv").isJsonObject()) {
+                            JsonObject iv = id.getAsJsonObject("iv");
+                            line.append(" iv=").append(iv.has("from") ? "from-" + iv.get("from").getAsString()
+                                    : iv.get("encoding").getAsString() + ":" + iv.get("value").getAsString());
+                        }
+                        line.append(" padding=").append(id.get("padding").getAsString());
+                        append(line.toString());
+                    }
+                }
             }
             setStatus(bad == 0, bad == 0 ? "running - " + files.size() + " config(s)" : "running with " + bad + " problem(s) - see log");
             return bad == 0;

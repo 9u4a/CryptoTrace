@@ -73,3 +73,16 @@ boundary): `module.exports = { encrypt, decrypt }` for a cipher (`custom.mjs loa
 ## Session keys captured at runtime
 Keys with `source: "session"` + a `capture` rule are filled from live responses — server side in
 `profile.mjs setKey` + `engine.mjs key` op; Burp side in `SessionKeys.java`.
+
+## Crypto with no hookable API (0.5.0)
+- **Constant signatures**: `chrome-ext/signatures.json` (+ scanner `signatures.js`). Add `{id, name, algo, kind, values}`;
+  `kind` is `bytes` (consecutive small literals, e.g. an S-box), `words` (32-bit constants all within 4000 chars, any
+  literal form), `text`, `regex` or `alphabet`. Add a test in `chrome-ext/test/signatures.test.mjs` that re-derives the
+  constants (or finds them in a real implementation under `samples/public/vendor/`).
+- **Unknown ciphertext**: `hook.js` encoding sinks (btoa / Array#join) + `hook-transport.js` origin records; filtering
+  in `correlate.js isExplained`. Add a sink by wrapping it and calling `noteSink(name, result)`.
+- **Tracing**: `chrome-ext/tracer.js` (shared by the panel and E2E harnesses). Traced calls become an `identify` grid
+  in `config-builder.js tracedSpec`; the server picks the combination in `server/src/identify.mjs`. To consider
+  another algorithm family, add it to `tracedSpec`'s `algs` (it must be buildable by `symmetricCipher`).
+- **SEED**: built in (`server/src/seed.mjs`, Node's OpenSSL has none) as a `createCipheriv` look-alike; other
+  non-OpenSSL block ciphers can be added the same way and routed in `symmetricCipher`.
