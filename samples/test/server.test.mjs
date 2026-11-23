@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { createSampleServer, aesCbcEncrypt, aesCbcDecrypt, gcmEncrypt, gcmDecrypt, C_KEY } from '../server.mjs';
+import { E_KEY } from '../keys.mjs';
 
 let server, base, keyDir;
 
@@ -73,6 +74,23 @@ test('D: jsbn-style RSA PKCS#1 v1.5 (hex) in a urlencoded form field', async () 
   // instead of throwing, so garbage is refused as a wrong PIN rather than with a 400.
   const garbage = await post('/api/pin', 'userId=x&encPin=00ff', 'application/x-www-form-urlencoded');
   assert.equal((await garbage.json()).code, 'E403');
+});
+
+test('E: AES-256-CBC static key, fresh IV per request in the X-Enc-IV header (hex); response {iv, data}', async () => {
+  const key = Buffer.from(E_KEY, 'utf8');
+  const iv = crypto.randomBytes(16);
+  const c = crypto.createCipheriv('aes-256-cbc', key, iv);
+  const payload = Buffer.concat([c.update(JSON.stringify({ title: 'hi<b>', body: '문의' })), c.final()]).toString('base64');
+  const res = await fetch(base + '/api/inquiry', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Enc-IV': iv.toString('hex') }, body: JSON.stringify({ payload, channel: 'WEB' }) });
+  assert.equal(res.status, 200);
+  const out = await res.json();
+  const d = crypto.createDecipheriv('aes-256-cbc', key, Buffer.from(out.iv, 'base64'));
+  const reply = JSON.parse(Buffer.concat([d.update(Buffer.from(out.data, 'base64')), d.final()]).toString());
+  assert.equal(reply.msg, 'inquiry received: hi<b>');
+  const bad = await fetch(base + '/api/inquiry', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Enc-IV': crypto.randomBytes(16).toString('hex') }, body: JSON.stringify({ payload }) });
+  assert.equal(bad.status, 400, 'wrong IV -> the target rejects it');
 });
 
 test('static files served, traversal blocked', async () => {

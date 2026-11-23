@@ -122,6 +122,18 @@
     <button id="d-go">확인</button>
   </section>
 
+  <section class="card">
+    <h2>1:1 문의 등록</h2>
+    <p class="sub">WebCrypto AES-256-CBC 고정 키 · 요청마다 새 IV를 <code>X-Enc-IV</code> 헤더(hex)로 전송, 본문 <code>$.payload</code></p>
+    <label for="e-cat">문의 유형</label>
+    <select id="e-cat"><option value="CARD">카드</option><option value="TRANSFER" selected>이체</option><option value="ETC">기타</option></select>
+    <label for="e-title">제목</label>
+    <input id="e-title" value="이체 한도 변경 문의">
+    <label for="e-body">내용</label>
+    <input id="e-body" value="모바일 이체 한도를 1회 500만원으로 올리고 싶습니다.">
+    <button id="e-go">문의 등록</button>
+  </section>
+
   <section class="card wide">
     <h2>응답 로그 <span class="tag">복호화된 응답</span></h2>
     <p class="sub">페이지가 응답을 복호화한 결과입니다. 네트워크/Burp에는 암호문만 보입니다.</p>

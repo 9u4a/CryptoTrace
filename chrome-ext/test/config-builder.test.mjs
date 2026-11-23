@@ -387,3 +387,59 @@ test('a key the page generated (keySource generateKey) is per-request even when 
   const { skipped } = sandbox.window.loadableConfig(cfg);
   assert.match(skipped[0], /key changes per request/);
 });
+
+// What hook.js records for a WebCrypto AES call: output = ciphertext(+tag) bytes WITHOUT the IV.
+function wcRecord(alg, key, iv, plain, extra) {
+  const c = crypto.createCipheriv(`aes-256-${alg}`, key, iv);
+  const ct = Buffer.concat([c.update(plain), c.final(), alg === 'gcm' ? c.getAuthTag() : Buffer.alloc(0)]);
+  return { lib: 'webcrypto', op: 'encrypt', alg: { name: `AES-${alg.toUpperCase()}` }, keySource: 'importKey',
+    key: { encoding: 'base64', value: b64(key) }, iv: { encoding: 'base64', value: b64(iv) },
+    input: { encoding: 'base64', value: b64(Buffer.from(plain)) }, output: { encoding: 'base64', value: b64(ct) },
+    frame: 'https://api.shop.test/', ct, ...extra };
+}
+
+test('IV in its own field (ivApply) -> iv {from:"field"}; selftest vector carries the iv', () => {
+  const buildConfig = loadBuilder();
+  const rec = wcRecord('gcm', Buffer.alloc(32, 7), crypto.randomBytes(12), '{"amount":5}', {
+    apply: { in: 'json', path: '$.ct' }, ivApply: { in: 'json', path: '$.iv', encoding: 'base64' } });
+  const cfg = buildConfig([rec]);
+  assert.deepEqual(JSON.parse(JSON.stringify(cfg.ciphers.c1.iv)), { from: 'field', in: 'json', path: '$.iv', encoding: 'base64' });
+  assert.equal(JSON.stringify(cfg.apply.request[0]), JSON.stringify({ in: 'json', path: '$.ct', cipher: 'c1' }));
+  assert.equal(cfg.selftest[0].iv, rec.iv.value);
+  const res = loadIntoEngine(cfg);
+  assert.equal(res.error, undefined, res.error);
+  assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }]);
+});
+
+test('IV prefixed on the wire (ivPrefix) -> iv {from:"prefix", length}; vector = iv || ciphertext', () => {
+  const buildConfig = loadBuilder();
+  const iv = crypto.randomBytes(16);
+  const rec = wcRecord('cbc', Buffer.alloc(32, 8), iv, 'hello cbc', { apply: { in: 'body', ivPrefix: 16 } });
+  const cfg = buildConfig([rec]);
+  assert.deepEqual(JSON.parse(JSON.stringify(cfg.ciphers.c1.iv)), { from: 'prefix', length: 16 });
+  assert.equal(JSON.stringify(cfg.apply.request[0]), JSON.stringify({ in: 'body', cipher: 'c1' }));
+  assert.equal(cfg.selftest[0].ciphertext, b64(Buffer.concat([iv, rec.ct])));
+  const res = loadIntoEngine(cfg);
+  assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }], JSON.stringify(res));
+});
+
+test('WebCrypto GCM with the default IV-prefix assumption still self-tests (vector includes the IV)', () => {
+  const buildConfig = loadBuilder();
+  const iv = crypto.randomBytes(12);
+  const rec = wcRecord('gcm', Buffer.alloc(32, 9), iv, 'plain', { apply: { in: 'body' } });
+  const res = loadIntoEngine(buildConfig([rec]));
+  assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }], JSON.stringify(res));
+});
+
+test('ciphertext re-encoded as hex on the wire (apply.encoding) -> outEncoding hex; vector in hex', () => {
+  const buildConfig = loadBuilder();
+  const iv = crypto.randomBytes(16);
+  const rec = wcRecord('cbc', Buffer.alloc(32, 10), iv, 'hex wire', {
+    apply: { in: 'form', name: 'encData', encoding: 'hex' }, ivApply: { in: 'form', name: 'encIv', encoding: 'hex' } });
+  const cfg = buildConfig([rec]);
+  assert.equal(cfg.ciphers.c1.outEncoding, 'hex');
+  assert.equal(cfg.selftest[0].ciphertext, rec.ct.toString('hex'));
+  assert.equal(cfg.selftest[0].iv, iv.toString('hex'));
+  const res = loadIntoEngine(cfg);
+  assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }], JSON.stringify(res));
+});

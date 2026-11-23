@@ -125,8 +125,30 @@ export function transform(profile, rules, msg, direction, integrity = [], reques
   const rulePath = requestPath != null ? splitPath(requestPath)[0] : pathname;
   const applied = [];
   let json; // parsed lazily, shared by all json rules
-  const dec = (cipher, v) => (cipher.canDecrypt === false ? KEEP + v : cipher.decrypt(v));
-  const enc = (cipher, v) => (typeof v === 'string' && v.startsWith(KEEP) ? v.slice(KEEP.length) : cipher.encrypt(v));
+  // A field elsewhere in this message (where a cipher keeps its IV): read and written in place.
+  const field = (loc) => ({
+    get() {
+      if (loc.in === 'header') { const i = findHeader(headers, loc.name); return i < 0 ? undefined : headers[i][1]; }
+      if (loc.in === 'query') return queryGet(qs, loc.name);
+      if (loc.in === 'form') return queryGet(body, loc.name);
+      if (loc.in === 'json') { json ??= JSON.parse(body); return getAt(json, parsePath(loc.path)); }
+      throw new Error(`iv field: unsupported location "${loc.in}"`);
+    },
+    set(v) {
+      if (loc.in === 'header') { const i = findHeader(headers, loc.name); if (i < 0) headers.push([loc.name, v]); else headers[i][1] = v; }
+      else if (loc.in === 'query') qs = querySetOrAdd(qs, loc.name, v);
+      else if (loc.in === 'form') body = querySetOrAdd(body, loc.name, v);
+      else if (loc.in === 'json') { json ??= JSON.parse(body); setAt(json, parsePath(loc.path), v); }
+      else throw new Error(`iv field: unsupported location "${loc.in}"`);
+    },
+  });
+  const ctxOf = (cipher) => {
+    if (!cipher.ivField) return undefined;
+    const f = field(cipher.ivField);
+    return { getIv: f.get, setIv: f.set };
+  };
+  const dec = (cipher, v) => (cipher.canDecrypt === false ? KEEP + v : cipher.decrypt(v, ctxOf(cipher)));
+  const enc = (cipher, v) => (typeof v === 'string' && v.startsWith(KEEP) ? v.slice(KEEP.length) : cipher.encrypt(v, ctxOf(cipher)));
   const run = (cipher, v) => (direction === 'decrypt' ? dec(cipher, v) : enc(cipher, v));
 
   for (const r of rules) {
@@ -136,8 +158,8 @@ export function transform(profile, rules, msg, direction, integrity = [], reques
     try {
       if (r.in === 'body') {
         if (!body) continue;
-        body = direction === 'decrypt' ? (cipher.canDecrypt === false ? KEEP + body : pretty(cipher.decrypt(body)))
-          : body.startsWith(KEEP) ? body.slice(KEEP.length) : cipher.encrypt(compact(body));
+        body = direction === 'decrypt' ? (cipher.canDecrypt === false ? KEEP + body : pretty(dec(cipher, body)))
+          : body.startsWith(KEEP) ? body.slice(KEEP.length) : enc(cipher, compact(body));
       } else if (r.in === 'header') {
         const i = findHeader(headers, r.name);
         if (i < 0) continue;
@@ -163,8 +185,8 @@ export function transform(profile, rules, msg, direction, integrity = [], reques
         for (const parts of paths) {
           const v = getAt(json, parts);
           if (v === undefined) continue;
-          setAt(json, parts, direction === 'decrypt' ? (cipher.canDecrypt === false ? KEEP + v : embed(cipher.decrypt(v)))
-            : typeof v === 'string' && v.startsWith(KEEP) ? v.slice(KEEP.length) : cipher.encrypt(unembed(v)));
+          setAt(json, parts, direction === 'decrypt' ? (cipher.canDecrypt === false ? KEEP + v : embed(dec(cipher, v)))
+            : enc(cipher, unembed(v)));
           any = true;
         }
         if (!any) continue;

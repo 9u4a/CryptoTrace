@@ -484,3 +484,81 @@ test('encrypt-only field (RSA public key only): shown as ct-keep:<ciphertext>, k
   assert.equal(JSON.parse(jdec.body).ek, `ct-keep:${ct}`);
   assert.equal(transform(profile, [rules[1]], jdec, 'encrypt').message.body, json.body);
 });
+
+test('iv from another field: cipher reads it on decrypt, writes a fresh one on encrypt; needs the message', () => {
+  const c = symmetricCipher({ alg: 'aes-256-gcm', iv: { from: 'field', in: 'json', path: '$.iv', encoding: 'base64' } }, k32);
+  let box;
+  const ctx = { getIv: () => box, setIv: (v) => { box = v; } };
+  const ct = c.encrypt('hello', ctx);
+  assert.equal(Buffer.from(box, 'base64').length, 12, 'GCM -> 12-byte IV written to the field');
+  assert.equal(c.decrypt(ct, ctx), 'hello');
+  assert.equal(c.deterministic, false);
+  assert.throws(() => c.decrypt(ct), /iv.*field/i);
+  assert.throws(() => symmetricCipher({ alg: 'aes-256-cbc', iv: { from: 'field', in: 'body' } }, k32), /json\/header\/query\/form/);
+  assert.throws(() => symmetricCipher({ alg: 'aes-256-cbc', iv: { from: 'field', in: 'json' } }, k32), /needs "path"/);
+});
+
+test('iv in a JSON field (sample B shape {iv, ct}) and in a header: decrypt + re-encrypt round-trip through the engine', () => {
+  const key = Buffer.alloc(32, 5);
+  const ivSpecJson = { from: 'field', in: 'json', path: '$.iv', encoding: 'base64' };
+  const ivSpecHdr = { from: 'field', in: 'header', name: 'X-IV', encoding: 'hex' };
+  const cfg = {
+    schemaVersion: 1, profile: 'ivf', scope: [{ host: 'api.test', pathRegex: '.*' }],
+    keys: { k: { source: 'static', value: key.toString('hex'), encoding: 'hex' } },
+    ciphers: {
+      g: { alg: 'aes-256-gcm', key: 'k', iv: ivSpecJson },
+      h: { alg: 'aes-256-cbc', key: 'k', iv: ivSpecHdr, padding: 'pkcs7' },
+    },
+    apply: { request: [{ in: 'json', path: '$.ct', cipher: 'g' }, { in: 'header', name: 'X-Data', cipher: 'h' }],
+             response: [{ in: 'json', path: '$.ct', cipher: 'g' }] },
+    integrity: [],
+    selftest: [],
+  };
+  // what the page sent: GCM ct with a separate iv field, and a CBC header with its IV in X-IV
+  const iv = crypto.randomBytes(12);
+  const g = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([g.update('{"to":"110","amount":5}'), g.final(), g.getAuthTag()]).toString('base64');
+  const hiv = crypto.randomBytes(16);
+  const h = crypto.createCipheriv('aes-256-cbc', key, hiv);
+  const hct = Buffer.concat([h.update('hdr-secret'), h.final()]).toString('base64');
+  cfg.selftest.push({ cipher: 'g', plain: '{"to":"110","amount":5}', ciphertext: ct, iv: iv.toString('base64') });
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-ivf-'));
+  const file = path.join(dir, 'c.json');
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const eng = createEngine();
+  const load = eng.handle({ op: 'load', files: [file] }).results[0];
+  assert.equal(load.error, undefined, load.error);
+  assert.deepEqual(load.selftest, [{ cipher: 'g', ok: true }], 'a selftest vector carries its iv');
+
+  const req = { method: 'POST', path: '/api/transfer', headers: [['X-IV', hiv.toString('hex')], ['X-Data', hct]],
+    body: JSON.stringify({ ek: 'x', iv: iv.toString('base64'), ct }) };
+  const dec = eng.handle({ op: 'decryptRequest', host: 'api.test', port: 443, request: req });
+  assert.ok(dec.applied.every((a) => a.ok), JSON.stringify(dec.applied));
+  assert.deepEqual(JSON.parse(dec.request.body).ct, { to: '110', amount: 5 });
+  assert.equal(dec.request.headers.find(([n]) => n === 'X-Data')[1], 'hdr-secret');
+
+  // edit + re-encrypt: new IVs are written next to the ciphertexts, and the target can decrypt them
+  const edited = JSON.parse(dec.request.body);
+  edited.ct.amount = 999;
+  const enc = eng.handle({ op: 'encryptRequest', host: 'api.test', port: 443,
+    request: { ...dec.request, body: JSON.stringify(edited) } });
+  const out = JSON.parse(enc.request.body);
+  assert.notEqual(out.iv, iv.toString('base64'), 'fresh IV');
+  const raw = Buffer.from(out.ct, 'base64');
+  const d = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(out.iv, 'base64'));
+  d.setAuthTag(raw.subarray(raw.length - 16));
+  assert.equal(Buffer.concat([d.update(raw.subarray(0, raw.length - 16)), d.final()]).toString(), '{"to":"110","amount":999}');
+  const hdr = Object.fromEntries(enc.request.headers);
+  const hd = crypto.createDecipheriv('aes-256-cbc', key, Buffer.from(hdr['X-IV'], 'hex'));
+  assert.equal(Buffer.concat([hd.update(Buffer.from(hdr['X-Data'], 'base64')), hd.final()]).toString(), 'hdr-secret');
+
+  // response {iv, ct}
+  const riv = crypto.randomBytes(12);
+  const rg = crypto.createCipheriv('aes-256-gcm', key, riv);
+  const rct = Buffer.concat([rg.update('{"ok":true}'), rg.final(), rg.getAuthTag()]).toString('base64');
+  const rdec = eng.handle({ op: 'decryptResponse', host: 'api.test', port: 443, requestPath: '/api/transfer',
+    response: { status: 200, headers: [], body: JSON.stringify({ iv: riv.toString('base64'), ct: rct }) } });
+  assert.deepEqual(JSON.parse(rdec.response.body).ct, { ok: true }, JSON.stringify(rdec));
+  fs.rmSync(dir, { recursive: true, force: true });
+});

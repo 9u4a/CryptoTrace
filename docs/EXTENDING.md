@@ -6,7 +6,11 @@ beside the existing ones and, for any `server/` change, rebuild the exe (`node s
 ## Symmetric cipher / block mode
 - **Server:** `server/src/cipher.mjs` — `symmetricCipher` runs any algorithm Node's OpenSSL exposes
   (`crypto.getCiphers()`), so AES/ARIA/SEED/Camellia/SM4 in cbc/ecb/ctr/gcm usually need no code. AEAD
-  (tag + nonce) is gated by `isAead`; add new AEAD names there.
+  (tag + nonce) is gated by `isAead`; add new AEAD names there. The IV is static (`iv: {value, encoding}`),
+  glued in front of the ciphertext (`{from: "prefix", length}`), or carried in another field of the same
+  message (`{from: "field", in: json|header|query|form, path|name, encoding}`): the cipher reads it through
+  the `ctx` that `message.mjs transform` passes, and writes a fresh one on encrypt. `chrome-ext/correlate.js`
+  learns the prefix / field placement (byte-level matching) and `config-builder.js` turns it into the spec.
 - **Capture → config:** `chrome-ext/config-builder.js` — `cryptojsAlg` / `webcryptoAlg` map a captured
   call to a cipher spec. Add the algorithm/mode name here so exports pick it up.
 

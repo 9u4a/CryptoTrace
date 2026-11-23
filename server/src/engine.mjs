@@ -76,8 +76,14 @@ export function createEngine() {
       return { matched: p.name, response: message, applied };
     },
 
-    decrypt: ({ profile, cipher, value }) => ({ value: cipherOf(byName(profile), cipher).decrypt(value) }),
-    encrypt: ({ profile, cipher, value }) => ({ value: cipherOf(byName(profile), cipher).encrypt(value) }),
+    // Raw ops. A cipher that keeps its IV in another field takes it as `iv` (decrypt) and returns the fresh
+    // one it used as `iv` (encrypt).
+    decrypt: ({ profile, cipher, value, iv }) => ({ value: cipherOf(byName(profile), cipher).decrypt(value, { getIv: () => iv }) }),
+    encrypt: ({ profile, cipher, value }) => {
+      let iv;
+      const out = cipherOf(byName(profile), cipher).encrypt(value, { setIv: (x) => { iv = x; } });
+      return iv === undefined ? { value: out } : { value: out, iv };
+    },
   };
 
   function cipherOf(p, name) {

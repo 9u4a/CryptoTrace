@@ -142,3 +142,25 @@ $('d-go').onclick = async () => {
   });
   log('POST /api/pin 응답', await res.json());
 };
+
+// ---- E. WebCrypto AES-256-CBC, static key; fresh IV per request in a header (hex) ----
+const eKeyP = crypto.subtle.importKey('raw', new TextEncoder().encode('ct-sample-e-key-for-inquiry-0001'),
+  { name: 'AES-CBC' }, false, ['encrypt', 'decrypt']);
+const toHex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+$('e-go').onclick = async () => {
+  const iv = crypto.getRandomValues(new Uint8Array(16));
+  const plain = new TextEncoder().encode(JSON.stringify({
+    category: $('e-cat').value, title: $('e-title').value, body: $('e-body').value, deviceId: DEVICE_ID,
+  }));
+  const payload = b64(await crypto.subtle.encrypt({ name: 'AES-CBC', iv }, await eKeyP, plain));
+  const res = await fetch('/api/inquiry', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Enc-IV': toHex(iv), ...commonHeaders() },
+    body: JSON.stringify({ payload, channel: 'WEB' }),
+  });
+  if (!res.ok) return log('문의 등록 실패', await res.text());
+  const out = await res.json();
+  const dec = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: unb64(out.iv) }, await eKeyP, unb64(out.data));
+  log('POST /api/inquiry 응답 (복호화)', JSON.parse(new TextDecoder().decode(dec)));
+};

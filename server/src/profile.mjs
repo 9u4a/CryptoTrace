@@ -240,12 +240,17 @@ export function selftest(profile) {
     const c = profile.ciphers[v.cipher];
     if (!c) return { cipher: v.cipher, ok: false, error: 'unknown cipher' };
     if (c.pending) return { cipher: v.cipher, ok: false, error: 'session key not captured yet' };
+    // A cipher whose IV sits in another field gets the vector's own iv for the decrypt check, and a scratch
+    // field for the round-trip (encrypt writes a fresh IV there, decrypt reads it back).
+    let scratch = v.iv;
+    const given = { getIv: () => v.iv, setIv: () => {} };
+    const roundTrip = { getIv: () => scratch, setIv: (x) => { scratch = x; } };
     try {
-      if (c.decrypt(v.ciphertext) !== v.plain) return { cipher: v.cipher, ok: false, error: 'decrypt(ciphertext) != plain' };
+      if (c.decrypt(v.ciphertext, given) !== v.plain) return { cipher: v.cipher, ok: false, error: 'decrypt(ciphertext) != plain' };
       if (c.deterministic && c.encrypt(v.plain) !== v.ciphertext.trim()) {
         return { cipher: v.cipher, ok: false, error: 'encrypt(plain) != ciphertext' };
       }
-      if (c.decrypt(c.encrypt(v.plain)) !== v.plain) return { cipher: v.cipher, ok: false, error: 'round-trip failed' };
+      if (c.decrypt(c.encrypt(v.plain, roundTrip), roundTrip) !== v.plain) return { cipher: v.cipher, ok: false, error: 'round-trip failed' };
       return { cipher: v.cipher, ok: true };
     } catch (e) {
       return { cipher: v.cipher, ok: false, error: e.message };

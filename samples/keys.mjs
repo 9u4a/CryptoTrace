@@ -8,3 +8,6 @@ export const A_IV = 'ct-sample-iv-016'; // 16 bytes
 // Scenario C — WebCrypto AES-256-GCM in a Web Worker, static raw key (hex), random IV prefixed to body
 export const C_KEY_HEX = '00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f';
 export const C_IV_LEN = 12;
+
+// Scenario E — WebCrypto AES-256-CBC, static raw key (utf8 bytes), fresh IV per request sent in a header
+export const E_KEY = 'ct-sample-e-key-for-inquiry-0001'; // 32 bytes

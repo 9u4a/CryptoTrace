@@ -40,3 +40,43 @@ test('JSON field, header and whole-body placements still correlate', () => {
   assert.deepEqual({ ...b.apply }, { in: 'header', name: 'X-Enc', at: '/j' });
   assert.deepEqual({ ...c.apply }, { in: 'body', at: '/t' });
 });
+
+const B = (buf) => Buffer.from(buf).toString('base64');
+const wc = (iv, ct) => ({ lib: 'webcrypto', op: 'encrypt', alg: { name: 'AES-GCM' },
+  iv: { encoding: 'base64', value: B(iv) }, output: { encoding: 'base64', value: B(ct) } });
+const IV12 = Buffer.from('0102030405060708090a0b0c', 'hex');
+const IV16 = Buffer.from('a0a1a2a3a4a5a6a7a8a9aaabacadaeaf', 'hex'); // test bytes  leakcheck:allow
+const CT = Buffer.from('f1e2d3c4b5a6978877665544332211000f1e2d3c', 'hex'); // 20 bytes (not a multiple of 3)  leakcheck:allow
+
+test('IV sent in its own JSON field next to the ciphertext -> ivApply', () => {
+  const correlate = load();
+  const rec = wc(IV12, CT);
+  correlate({ lib: 'transport', op: 'fetch', url: '/api/transfer', body: { kind: 'json', fields: [
+    { path: '$.ek', value: 'zzzzzzzzzzzz' }, { path: '$.iv', value: B(IV12) }, { path: '$.ct', value: B(CT) }] } }, [rec]);
+  assert.deepEqual({ ...rec.apply }, { in: 'json', path: '$.ct', at: '/api/transfer' });
+  assert.deepEqual({ ...rec.ivApply }, { in: 'json', path: '$.iv', encoding: 'base64' });
+});
+
+test('IV in a header as hex -> ivApply {in:header, encoding:hex}', () => {
+  const correlate = load();
+  const rec = wc(IV16, CT);
+  correlate({ lib: 'transport', op: 'fetch', url: '/x', headers: [['X-IV', IV16.toString('hex')], ['X-Data', B(CT)]], body: { kind: 'none' } }, [rec]);
+  assert.deepEqual({ ...rec.apply }, { in: 'header', name: 'X-Data', at: '/x' });
+  assert.deepEqual({ ...rec.ivApply }, { in: 'header', name: 'X-IV', encoding: 'hex' });
+});
+
+test('ciphertext bytes re-encoded as hex in a form field -> apply + wire encoding hex', () => {
+  const correlate = load();
+  const rec = wc(IV12, CT);
+  correlate({ lib: 'transport', op: 'fetch', url: '/f', body: { kind: 'form', fields: [{ name: 'encData', value: CT.toString('hex') }] } }, [rec]);
+  assert.deepEqual({ ...rec.apply }, { in: 'form', name: 'encData', at: '/f', encoding: 'hex' });
+});
+
+test('IV prepended to the ciphertext bytes (16-byte IV breaks base64 substring alignment) -> ivPrefix', () => {
+  const correlate = load();
+  const rec = wc(IV16, CT);
+  const wire = B(Buffer.concat([IV16, CT]));
+  assert.ok(!wire.includes(B(CT).replace(/=+$/, '')), 'precondition: plain substring matching cannot see it');
+  correlate({ lib: 'transport', op: 'fetch', url: '/p', body: { kind: 'text', sample: wire } }, [rec]);
+  assert.deepEqual({ ...rec.apply }, { in: 'body', at: '/p', ivPrefix: 16 });
+});

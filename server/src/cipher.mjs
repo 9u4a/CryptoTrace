@@ -23,7 +23,8 @@ function unpad(buf, padding) {
 
 /**
  * Build a symmetric cipher.
- * spec: { alg, iv?: {value, encoding} | {from:"prefix", length}, padding?: pkcs7|none|zero,
+ * spec: { alg, iv?: {value, encoding} | {from:"prefix", length} | {from:"field", in, path|name, encoding?, length?},
+ *         padding?: pkcs7|none|zero,
  *         tag?: {length}, aad?: {value, encoding}, inEncoding?, outEncoding? }
  * keyBytes: Buffer
  */
@@ -40,16 +41,33 @@ export function symmetricCipher(spec, keyBytes) {
   const outEnc = spec.outEncoding || 'base64';
   const tagLen = spec.tag?.length ?? 16;
   const ivPrefix = spec.iv?.from === 'prefix';
-  const ivLen = ivPrefix ? spec.iv.length ?? (isAead ? 12 : 16) : 0;
-  const staticIv = !isEcb && !ivPrefix ? (spec.iv ? toBytes(spec.iv.value, spec.iv.encoding) : null) : null;
-  if (!isEcb && !ivPrefix && !staticIv) throw new Error(`${alg} needs "iv"`);
+  // IV carried in another field of the same message (e.g. {iv, ct} JSON or an X-IV header): read from
+  // ctx.getIv() on decrypt; on encrypt a fresh IV is generated and written back through ctx.setIv().
+  const ivField = spec.iv?.from === 'field';
+  const ivEnc = ivField ? spec.iv.encoding || 'base64' : null;
+  if (ivField) {
+    const loc = spec.iv;
+    if (!['json', 'header', 'query', 'form'].includes(loc.in)) throw new Error(`iv.from "field": "in" must be json/header/query/form, got "${loc.in}"`);
+    if (loc.in === 'json' ? !loc.path : !loc.name) throw new Error(`iv.from "field": in:${loc.in} needs "${loc.in === 'json' ? 'path' : 'name'}"`);
+  }
+  const ivLen = ivPrefix || ivField ? spec.iv.length ?? (isAead ? 12 : 16) : 0;
+  const staticIv = !isEcb && !ivPrefix && !ivField ? (spec.iv ? toBytes(spec.iv.value, spec.iv.encoding) : null) : null;
+  if (!isEcb && !ivPrefix && !ivField && !staticIv) throw new Error(`${alg} needs "iv"`);
+  const fieldIv = (ctx) => {
+    const v = ctx && typeof ctx.getIv === 'function' ? ctx.getIv() : undefined;
+    if (v == null || v === '') throw new Error('iv is read from another field of the message, which is not available here');
+    return toBytes(String(v), ivEnc);
+  };
   const aad = spec.aad ? toBytes(spec.aad.value, spec.aad.encoding) : null;
   const usePadding = !isAead && !alg.includes('-ctr') && padding === 'pkcs7';
 
   return {
-    deterministic: !ivPrefix,
-    encrypt(plain) {
-      const iv = ivPrefix ? crypto.randomBytes(ivLen) : staticIv;
+    deterministic: !ivPrefix && !ivField,
+    ivField: ivField ? spec.iv : null,
+    encrypt(plain, ctx) {
+      if (ivField && !(ctx && typeof ctx.setIv === 'function')) throw new Error('iv is written to another field of the message, which is not available here');
+      const iv = ivPrefix || ivField ? crypto.randomBytes(ivLen) : staticIv;
+      if (ivField) ctx.setIv(fromBytes(iv, ivEnc));
       const c = crypto.createCipheriv(alg, keyBytes, isEcb ? null : iv, isAead ? { authTagLength: tagLen } : undefined);
       c.setAutoPadding(usePadding);
       if (aad) c.setAAD(aad);
@@ -57,9 +75,9 @@ export function symmetricCipher(spec, keyBytes) {
       const parts = [ivPrefix ? iv : null, body, isAead ? c.getAuthTag() : null].filter(Boolean);
       return fromBytes(Buffer.concat(parts), outEnc);
     },
-    decrypt(text) {
+    decrypt(text, ctx) {
       let raw = toBytes(text.trim(), outEnc);
-      let iv = staticIv;
+      let iv = ivField ? fieldIv(ctx) : staticIv;
       if (ivPrefix) {
         iv = raw.subarray(0, ivLen);
         raw = raw.subarray(ivLen);

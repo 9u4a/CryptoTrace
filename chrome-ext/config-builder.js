@@ -96,6 +96,38 @@
     if (bits) out += B64[(acc << (6 - bits)) & 63];
     return out.replace(/\+/g, '-').replace(/\//g, '_');
   }
+  // Bytes of a recorded binary value (base64/hex), or null.
+  function recBytes(v) {
+    if (!v || v.value == null) return null;
+    if (v.encoding === 'base64') return b64Bytes(v.value);
+    if (v.encoding === 'hex' && /^[0-9a-fA-F]*$/.test(v.value) && v.value.length % 2 === 0) {
+      const out = [];
+      for (let i = 0; i < v.value.length; i += 2) out.push(parseInt(v.value.slice(i, i + 2), 16));
+      return out;
+    }
+    return null;
+  }
+  function encodeBytes(bytes, enc) {
+    if (enc === 'hex') return bytes.map((b) => (b < 16 ? '0' : '') + b.toString(16)).join('');
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 3) {
+      const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0);
+      const k = Math.min(3, bytes.length - i);
+      out += B64[(n >> 18) & 63] + B64[(n >> 12) & 63] + (k > 1 ? B64[(n >> 6) & 63] : '=') + (k > 2 ? B64[n & 63] : '=');
+    }
+    return enc === 'base64url' ? out.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') : out;
+  }
+  // The ciphertext as it travels (what the server's decrypt sees) for a selftest vector: the cipher's
+  // outEncoding, with the IV in front when the spec says so. Falls back to the recorded text.
+  function wireCiphertext(spec, ct, iv) {
+    const bytes = recBytes(ct);
+    if (!bytes) return ct.value;
+    const ivb = recBytes(iv);
+    const prefix = spec.iv && spec.iv.from === 'prefix' && ivb ? ivb : [];
+    const enc = spec.outEncoding || 'base64';
+    if (!prefix.length && enc === ct.encoding) return ct.value;
+    return encodeBytes(prefix.concat(bytes), enc);
+  }
   function asText(v) {
     if (!v) return null;
     if (v.encoding === 'utf8') return String(v.value);
@@ -236,13 +268,23 @@
             ? { source: 'static', value: String(r.key && r.key.value), encoding: 'utf8' }
             : keyEntry(r.key);
           if (ke) spec.key = keyNameFor(ke);
+          // Where the IV travels, learned by correlate.js: its own field, or glued in front of the ciphertext.
+          const placed = r.apply || r.applyResponse || {};
+          if (!passphrase && r.ivApply) {
+            const { in: where, path: p, name, encoding } = r.ivApply;
+            spec.iv = { from: 'field', in: where, ...(p ? { path: p } : { name }), encoding };
+          } else if (!passphrase && placed.ivPrefix) {
+            spec.iv = { from: 'prefix', length: placed.ivPrefix };
+          }
+          if (placed.encoding) spec.outEncoding = placed.encoding; // ciphertext re-encoded on the wire (e.g. hex)
           if (!passphrase && r.iv && r.iv.value && !spec.iv) spec.iv = { value: r.iv.value, encoding: r.iv.encoding === 'base64' ? 'base64' : 'hex' };
           cfg.ciphers[id] = spec;
         }
       }
       // apply rules from correlated transport locations (request and/or response side); `at` (the captured
       // request path) is kept aside and only becomes a pathRegex when the direction needs it (see below)
-      const rule = (a) => { const { at, ...rest } = a; const out = { ...rest, cipher: id }; Object.defineProperty(out, '_at', { value: at, enumerable: false }); return out; };
+      // (encoding / ivPrefix placement details live in the cipher spec, not the rule)
+      const rule = (a) => { const { at, encoding, ivPrefix, ...rest } = a; const out = { ...rest, cipher: id }; Object.defineProperty(out, '_at', { value: at, enumerable: false }); return out; };
       if (locKey && !ruleByLoc.has(locKey)) { cfg.apply.request.push(rule(r.apply)); ruleByLoc.set(locKey, id); }
       if (locKeyResp && !ruleByLocResp.has(locKeyResp)) { cfg.apply.response.push(rule(r.applyResponse)); ruleByLocResp.set(locKeyResp, id); }
       // selftest vector when we have both plaintext and ciphertext
@@ -251,7 +293,16 @@
       if (cfg.ciphers[id].alg === 'rsa' && !cfg.ciphers[id].privateKey) continue;
       const plain = asText(r.op === 'encrypt' ? r.input : r.output);
       const ct = r.op === 'encrypt' ? r.output : r.input;
-      if (plain != null && ct && ct.value != null) cfg.selftest.push({ cipher: id, plain, ciphertext: ct.value });
+      if (plain != null && ct && ct.value != null) {
+        const c = cfg.ciphers[id];
+        const vec = { cipher: id, plain, ciphertext: wireCiphertext(c, ct, r.iv) };
+        if (c.iv && c.iv.from === 'field') {
+          const ivb = recBytes(r.iv);
+          if (!ivb) continue; // no IV to check this vector with
+          vec.iv = encodeBytes(ivb, c.iv.encoding || 'base64');
+        }
+        cfg.selftest.push(vec);
+      }
     }
 
     // Draft integrity rules from captured hash/HMAC calls whose output landed in a request field

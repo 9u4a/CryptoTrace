@@ -10,6 +10,8 @@
 //                          Body = base64(iv[12] || ciphertext+tag); response same format.
 //   D  POST /api/pin       jsbn RSAKey (Tom Wu rsa.js) PKCS#1 v1.5, hex output, in a urlencoded form field
 //                          `encPin`. Key from GET /api/rsakey {modulus, exponent} (hex), the usual Korean shape.
+//   E  POST /api/inquiry   WebCrypto AES-256-CBC, static key, fresh IV per request in the X-Enc-IV header (hex).
+//                          Body {payload: base64(ct), channel}; response {iv: base64, data: base64(ct)}.
 //   GET  /api/accounts   plain JSON (fake demo accounts), mixed in like a real app.
 // Responses echo user input so reflected-payload detection can be tested through Burp.
 
@@ -18,7 +20,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { A_KEY, A_IV, C_KEY_HEX, C_IV_LEN } from './keys.mjs';
+import { A_KEY, A_IV, C_KEY_HEX, C_IV_LEN, E_KEY } from './keys.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(DIR, 'public');
@@ -120,6 +122,18 @@ export function createSampleServer({ keyDir = KEY_DIR } = {}) {
       return [200, { ok: true, code: '0000', msg: `pin verified for ${userId}`, data: { pinLength: pin.length } }];
     },
 
+    'POST /api/inquiry': async (body, req) => {
+      const key = Buffer.from(E_KEY, 'utf8');
+      const iv = Buffer.from(String(req.headers['x-enc-iv'] || ''), 'hex');
+      const d = crypto.createDecipheriv('aes-256-cbc', key, iv);
+      const q = JSON.parse(Buffer.concat([d.update(Buffer.from(JSON.parse(body).payload, 'base64')), d.final()]).toString('utf8'));
+      const reply = JSON.stringify({ ok: true, code: '0000', msg: `inquiry received: ${q.title}`,
+        data: { ticketNo: 'Q' + Date.now(), category: q.category ?? null, receivedAt: now() } });
+      const riv = crypto.randomBytes(16);
+      const c = crypto.createCipheriv('aes-256-cbc', key, riv);
+      return [200, { iv: riv.toString('base64'), data: Buffer.concat([c.update(reply), c.final()]).toString('base64') }];
+    },
+
     'GET /api/accounts': async () => [200, { code: '0000', data: accounts.map((a) => ({ ...a })) }],
 
     'POST /api/login': async (body) => {
@@ -196,7 +210,7 @@ export function createSampleServer({ keyDir = KEY_DIR } = {}) {
     const route = routes[`${req.method} ${new URL(req.url, 'http://x').pathname}`];
     if (!route) return req.method === 'GET' ? serveStatic(req, res) : send(res, 404, { error: 'not found' });
     try {
-      const [status, body, type] = await route(await readBody(req));
+      const [status, body, type] = await route(await readBody(req), req);
       send(res, status, body, type);
     } catch (e) {
       send(res, 400, { error: 'decrypt/validate failed', detail: e.message });
