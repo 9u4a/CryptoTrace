@@ -85,6 +85,8 @@
     else if (b.kind === 'text' && b.sample) out.push({ loc: { in: 'body' }, value: b.sample });
     for (const [name, value] of t.headers || []) out.push({ loc: { in: 'header', name }, value });
     for (const [name, value] of t.query || []) out.push({ loc: { in: 'query', name }, value });
+    // cookies: matched on their URL-decoded value; a URL-encoded one is re-encoded by the server (urlEncoded)
+    for (const [name, value] of t.cookies || []) out.push({ loc: { in: 'cookie', name }, value, cookieEncoded: /%[0-9A-Fa-f]{2}/.test(value) });
     return out;
   }
 
@@ -120,7 +122,7 @@
         if (extra && (!best || r[key].value.length >= best[key].value.length)) { best = r; bestExtra = extra; }
       }
       if (!best) continue;
-      best[prop] = { ...slot.loc, at, ...bestExtra, ...extra };
+      best[prop] = { ...slot.loc, at, ...bestExtra, ...extra, ...(slot.cookieEncoded ? { urlEncoded: true } : {}) };
       const ivf = ivFieldOf(best, slots, slot);
       if (ivf) best.ivApply = ivf;
     }

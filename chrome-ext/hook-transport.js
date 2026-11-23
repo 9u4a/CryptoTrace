@@ -81,9 +81,23 @@
     else if (b.kind === 'text' && b.sample) out.push([{ in: 'body' }, b.sample]);
     for (const [name, value] of rec.headers || []) out.push([{ in: 'header', name }, value]);
     for (const [name, value] of rec.query || []) out.push([{ in: 'query', name }, value]);
+    for (const [name, value] of rec.cookies || []) {
+      let v = value;
+      try { v = decodeURIComponent(value); } catch (_) {}
+      out.push([{ in: 'cookie', name }, v]);
+    }
     return out;
   };
+  // Cookies the page itself can see (document.cookie) go out with same-origin requests: a ciphertext the page
+  // stores in a cookie is placed there. Workers have no document.
+  const cookiesOf = () => {
+    try {
+      const c = typeof document !== 'undefined' && document ? String(document.cookie || '') : '';
+      return c.split(/;\s*/).filter(Boolean).map((p) => { const i = p.indexOf('='); return i < 0 ? [p, ''] : [p.slice(0, i), p.slice(i + 1)]; });
+    } catch (_) { return []; }
+  };
   const sent = (rec) => {
+    rec.cookies = cookiesOf();
     send(rec);
     try {
       const lookup = globalThis.__ct_sinkLookup;

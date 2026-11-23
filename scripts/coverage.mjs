@@ -16,7 +16,7 @@ import { createEngine } from '../server/src/engine.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
-const only = (argv[argv.indexOf('--only') + 1] || '').split(',').filter(Boolean);
+const only = argv.includes('--only') ? String(argv[argv.indexOf('--only') + 1] || '').split(',').filter(Boolean) : [];
 const writeDocs = argv.includes('--docs');
 const verbose = argv.includes('--verbose');
 
@@ -45,8 +45,10 @@ async function runCase(browser, c) {
   const P = (n) => `{"t":"cov-${id}-${n}"}`;
   const mods = panelModules();
   const tab = await browser.open(`${base}/cov/${id}`);
-  const tracer = mods.CryptoTraceTracer.createTracer({ cdp: (m, p, t) => browser.cdp(m, p, t), emit: (r) => tab.records.push(r), keyOf: (t) => t });
-  tab.listeners.push((m) => { if (m.method === 'Debugger.paused') tracer.onPaused(tab.s, m.params); });
+  const tracer = mods.CryptoTraceTracer.createTracer({ cdp: (m, p, t) => browser.cdp(m, p, t), emit: (r) => tab.records.push(r), keyOf: (t) => t,
+    scriptsOf: (t) => tab.parsed.filter((p) => (p.__session || tab.s) === t) });
+  tab.listeners.push((m) => { if (m.method === 'Debugger.paused') tracer.onPaused(m.sessionId, m.params); }); // page or worker session
+  const tracedSessions = new Set();
   const out = { id, group: c.group, title: c.title, expect: c.expect, notes: [] };
   try {
     for (let i = 0; i < 30 && !(await tab.evaluate('window.__ready === true')); i++) await sleep(100);
@@ -59,20 +61,22 @@ async function runCase(browser, c) {
     const r1 = replay(mods, tab.records);
     out.scan = [];
     for (const p of tab.parsed) {
-      if (!p.url || !p.url.startsWith(base)) continue;
+      if (p.url && !p.url.startsWith(base)) continue; // ours + eval scripts (no URL); not extensions
       try {
-        const { scriptSource } = await browser.cdp('Debugger.getScriptSource', { scriptId: p.scriptId }, tab.s);
+        const { scriptSource } = await browser.cdp('Debugger.getScriptSource', { scriptId: p.scriptId }, p.__session || tab.s);
         for (const f of mods.CryptoTraceScan.scanSource(scriptSource, mods.signatures)) if (f.strength === 'strong' && !out.scan.includes(f.algo)) out.scan.push(f.algo);
       } catch (_) {}
     }
     const unk = r1.unknown.filter((u) => u.url && u.url.includes(api));
     if (unk.length) {
-      const armed = await tracer.traceFrames(tab.s, tracer.pickFrames(unk[0].frames));
+      const target = unk[0].__session || tab.s; // trace in the realm (page or worker) that built the value
+      tracedSessions.add(target);
+      const armed = await tracer.traceFrames(target, tracer.pickFrames(unk[0].frames));
       out.notes.push('traced: ' + armed.join(' / '));
     }
     await tab.evaluate(`window.__run(${JSON.stringify(P(2))})`);
     await sleep(800);
-    await tracer.stop(tab.s).catch(() => {});
+    for (const t of tracedSessions) await tracer.stop(t).catch(() => {});
 
     // config as Send to Burp builds it, loaded by the crypto server
     const { seen, unknown } = replay(mods, tab.records);
@@ -101,7 +105,9 @@ async function runCase(browser, c) {
     const dec = load.error ? null : eng.handle({ op: 'decryptRequest', host: '127.0.0.1', port, request: req });
     const view = dec && dec.request
       ? `${dec.request.path || ''}\n${dec.request.headers.map(([k, v]) => k + ': ' + v).join('\n')}\n${dec.request.body}` : '';
-    const decryptOk = view.includes(`cov-${id}-2`);
+    const times = (hay, needle) => String(hay).split(needle).length - 1;
+    const need = c.markers || 1;
+    const decryptOk = c.kind !== 'response' && times(view, `cov-${id}-2`) >= need;
     let edited = null;
     if (decryptOk) {
       const sw = (s) => (s == null ? s : s.split(`cov-${id}-2`).join(`cov-${id}-3`));
@@ -117,10 +123,10 @@ async function runCase(browser, c) {
       const enc = eng.handle({ op: 'encryptRequest', host: '127.0.0.1', port, request: edited });
       const failed = (enc.applied || []).filter((a) => !a.ok);
       if (failed.length) out.notes.push('re-encrypt: ' + failed.map((a) => a.where + ' ' + a.error).join('; '));
-      const headers = Object.fromEntries(enc.request.headers.filter(([k]) => /^(content-type|x-)/i.test(k)));
+      const headers = Object.fromEntries(enc.request.headers.filter(([k]) => /^(content-type|cookie|x-)/i.test(k)));
       const res = await fetch(base + (enc.request.path || req.path), { method: req.method, headers, body: req.method === 'GET' ? undefined : enc.request.body });
       const reply = await res.json().catch(() => ({}));
-      reencOk = !!reply.ok && String(reply.plain).includes(`cov-${id}-3`);
+      reencOk = !!reply.ok && times(reply.plain, `cov-${id}-3`) >= need;
       if (!reply.ok) out.notes.push('target rejected the re-encrypted request: ' + reply.error);
     }
 
@@ -128,7 +134,15 @@ async function runCase(browser, c) {
     const hooked = seen.some((r) => r.lib !== 'traced' && r.lib !== 'transport' && at(r));
     const traced = seen.some((r) => r.lib === 'traced' && at(r));
     const unknownLeft = unknown.filter((u) => u.url && u.url.includes(api));
-    if (decryptOk && reencOk) out.status = traced && !hooked ? 'trace' : 'auto';
+    // response cases: Burp's view of the response the target sent back (decryptResponse)
+    let respOk = false;
+    if (c.kind === 'response' && !load.error && raw.response) {
+      const dr = eng.handle({ op: 'decryptResponse', host: '127.0.0.1', port, path: raw.path, response: raw.response });
+      respOk = !!(dr.response && String(dr.response.body).includes(`cov-${id}-2`));
+      if (!respOk) out.notes.push('response not decrypted: ' + JSON.stringify(dr.applied || dr.matched || null));
+    }
+    if (respOk) out.status = 'auto';
+    else if (decryptOk && reencOk) out.status = traced && !hooked ? 'trace' : 'auto';
     else if (reencOk) out.status = 'encrypt-only';
     else if (skipped.length) out.status = 'skip';
     else if (unknownLeft.length || traced || hooked || unk.length) out.status = 'locate';
@@ -180,6 +194,14 @@ const md = [
   '| case | group | what | expect | got | verdict | notes |',
   '|---|---|---|---|---|---|---|',
   ...results.map((r) => `| ${r.id} | ${r.group} | ${r.title} | ${r.expect} | ${r.status} | ${r.verdict} | ${[...(r.notes || []), r.scan && r.scan.length ? 'scan: ' + r.scan.join('/') : ''].filter(Boolean).join('<br>').replace(/\|/g, '\\|')} |`),
+  '',
+  '## Not measured by this lab',
+  '',
+  '- Rewriting WebSocket frames in Burp (placements are only shown in the panel).',
+  '- Non-standard ciphers (custom XOR, nested encodings, per-request keys): located only -- they need a custom module or the planned L4 browser oracle.',
+  '- Identification covers AES/ARIA/SEED block modes (CBC/ECB/CTR/CFB/OFB, PKCS#7/zero/none); LEA, WASM crypto and stream ciphers outside OpenSSL are not identified.',
+  '- Code with no stable function boundaries (control-flow-flattened obfuscation) and cross-origin iframes are not exercised.',
+  '- Burp UI itself (Decrypted tab, Scanner insertion points) is covered by the Java tests and manual checks, not by this run.',
   '',
 ].join('\n');
 fs.mkdirSync(path.join(ROOT, 'output'), { recursive: true });

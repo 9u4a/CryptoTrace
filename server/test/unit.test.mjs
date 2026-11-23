@@ -623,3 +623,19 @@ test('identify: a cipher spec with candidate algorithms/keys/IVs picks the one t
     request: { method: 'POST', path: '/x', headers: [], body: JSON.stringify({ encData: 'AAAA' }) } });
   assert.match(fail.applied[0].error, /not identified/);
 });
+
+test('apply in:cookie decrypts/encrypts one cookie in the Cookie header; urlEncoded cookies stay URL-encoded', () => {
+  const { eng, cleanup } = roundTripConfig({ request: [{ in: 'cookie', name: 'enc', cipher: 'c1', urlEncoded: true }], response: [] });
+  const ct = eng.handle({ op: 'encrypt', profile: 'rt', cipher: 'c1', value: '{"t":"secret;x"}' }).value;
+  const cookie = `sid=abc; enc=${encodeURIComponent(ct)}; theme=dark`;
+  const dec = eng.handle({ op: 'decryptRequest', host: 'api.test', port: 443, request: { method: 'POST', path: '/p', headers: [['Cookie', cookie]], body: '' } });
+  assert.ok(dec.applied[0].ok, JSON.stringify(dec.applied));
+  const shown = dec.request.headers.find(([n]) => n === 'Cookie')[1];
+  assert.match(shown, /^sid=abc; enc=.+; theme=dark$/, 'other cookies untouched');
+  assert.equal(decodeURIComponent(shown.match(/enc=([^;]*)/)[1]), '{"t":"secret;x"}', 'plaintext shown (encoded where it would break the header)');
+  const enc = eng.handle({ op: 'encryptRequest', host: 'api.test', port: 443, request: dec.request });
+  const sent = enc.request.headers.find(([n]) => n === 'Cookie')[1].match(/enc=([^;]*)/)[1];
+  assert.match(sent, /%2B|%2F|%3D|^[A-Za-z0-9%]+$/, 'URL-encoded like the page sent it');
+  assert.equal(eng.handle({ op: 'decrypt', profile: 'rt', cipher: 'c1', value: decodeURIComponent(sent) }).value, '{"t":"secret;x"}');
+  cleanup();
+});

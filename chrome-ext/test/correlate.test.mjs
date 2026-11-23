@@ -123,3 +123,11 @@ test('a pure encoding step (output == its input text) never takes the placement 
   assert.equal(b64.apply, undefined);
   assert.deepEqual({ ...encSeed.apply }, { in: 'json', path: '$.encData', at: '/api/card/pin' });
 });
+
+test('a ciphertext in a URL-encoded cookie -> apply {in:cookie, name, urlEncoded}', () => {
+  const correlate = load();
+  const ct = 'U2FsdGVkX1+abc/def=';
+  const rec = { lib: 'cryptojs', op: 'encrypt', output: { encoding: 'base64', value: ct } };
+  correlate({ lib: 'transport', op: 'fetch', url: '/api', headers: [], body: { kind: 'none' }, cookies: [['sid', 'x'], ['enc', encodeURIComponent(ct)]] }, [rec]);
+  assert.deepEqual({ ...rec.apply }, { in: 'cookie', name: 'enc', at: '/api', urlEncoded: true });
+});

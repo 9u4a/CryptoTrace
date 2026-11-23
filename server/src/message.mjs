@@ -42,6 +42,23 @@ function querySetOrAdd(qs, name, value) {
   return qs ? `${qs}&${pair}` : pair;
 }
 
+// ---- Cookie header: one named cookie's value, the other cookies untouched ----
+function cookieGet(header, name) {
+  for (const part of String(header).split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+  }
+  return undefined;
+}
+function cookieSet(header, name, value) {
+  return String(header).split(';').map((part) => {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) return `${part.slice(0, i + 1)}${value}`;
+    return part;
+  }).join(';');
+}
+const uriDecode = (v) => { try { return decodeURIComponent(v); } catch { return v; } };
+
 // ---- multipart/form-data: operate on one named text field's value, structure preserved ----
 // Only text fields (UTF-8 bodies); binary file parts travel base64 (bodyEncoding) and are out of scope.
 function boundaryOf(headers) {
@@ -172,6 +189,18 @@ export function transform(profile, rules, msg, direction, integrity = [], reques
         const v = queryGet(body, r.name); // x-www-form-urlencoded body: same shape as a query string
         if (v === undefined) continue;
         body = querySet(body, r.name, run(cipher, v));
+      } else if (r.in === 'cookie') {
+        // A page that set it with encodeURIComponent (rule.urlEncoded, learned at capture) gets it back encoded.
+        // Shown plaintext is encoded only where it would break the header (; , whitespace).
+        const i = findHeader(headers, 'cookie');
+        if (i < 0) continue;
+        const raw = cookieGet(headers[i][1], r.name);
+        if (raw === undefined) continue;
+        const v = r.urlEncoded || /%[0-9A-Fa-f]{2}/.test(raw) ? uriDecode(raw) : raw;
+        let out = run(cipher, v);
+        if (direction === 'decrypt') { if (/[;,\s]/.test(out)) out = encodeURIComponent(out); }
+        else if (r.urlEncoded) out = encodeURIComponent(out);
+        headers[i][1] = cookieSet(headers[i][1], r.name, out);
       } else if (r.in === 'multipart') {
         const boundary = boundaryOf(headers);
         if (!boundary) continue;

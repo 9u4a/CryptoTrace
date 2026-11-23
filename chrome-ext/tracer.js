@@ -13,7 +13,22 @@
   const SCOPES = new Set(['local', 'closure', 'script', 'block', 'module']);
   const SER_FN = 'function () { return globalThis.__ct_ser ? globalThis.__ct_ser(this) : null; }';
 
-  function createTracer({ cdp, emit, keyOf = (t) => JSON.stringify(t), maxCandidates = 24 }) {
+  function createTracer({ cdp, emit, keyOf = (t) => JSON.stringify(t), maxCandidates = 24, scriptsOf = () => [] }) {
+    // An eval / new Function frame has no URL to break on: find the URL-less script of this target whose
+    // line:col exists and that contains the function's name (scriptsOf(t) -> [{scriptId, url}], newest last).
+    async function evalLocation(t, f) {
+      const name = String(f.fn || '').split('.').pop();
+      const list = (scriptsOf(t) || []).filter((p) => !p.url).slice(-80).reverse();
+      for (const p of list) {
+        let src = '';
+        try { src = (await cdp('Debugger.getScriptSource', { scriptId: p.scriptId }, t)).scriptSource || ''; } catch (_) { continue; }
+        const line = src.split('\n')[f.line - 1];
+        if (line == null || line.length < f.col - 1) continue;
+        if (name && name !== '(anonymous)' && !src.includes(name)) continue;
+        return { scriptId: p.scriptId, lineNumber: f.line - 1, columnNumber: f.col - 1 };
+      }
+      return null;
+    }
     const states = new Map();
     const stateOf = (t) => {
       const k = keyOf(t);
@@ -153,8 +168,8 @@
         const seen = new Set();
         const out = [];
         for (const f of frames || []) {
-          const k = f && f.url + ':' + f.line + ':' + f.col;
-          if (!f || !f.url || seen.has(k)) continue;
+          const k = f && (f.url || 'eval') + ':' + f.line + ':' + f.col;
+          if (!f || (!f.url && !f.eval) || seen.has(k)) continue;
           seen.add(k);
           out.push(f);
           if (out.length >= max) break;
@@ -167,10 +182,16 @@
         if (!s.on) { await cdp('Debugger.setSkipAllPauses', { skip: false }, t); s.on = true; }
         const armed = [];
         for (const f of frames) {
-          if (!f || !f.url) continue;
+          if (!f || (!f.url && !f.eval)) continue;
           try {
-            const r = await cdp('Debugger.setBreakpointByUrl', { url: f.url, lineNumber: f.line - 1, columnNumber: f.col - 1 }, t);
-            s.bps.set(r.breakpointId, { kind: 'callsite', name: f.fn, url: f.url });
+            let r;
+            if (f.url) r = await cdp('Debugger.setBreakpointByUrl', { url: f.url, lineNumber: f.line - 1, columnNumber: f.col - 1 }, t);
+            else {
+              const location = await evalLocation(t, f);
+              if (!location) continue;
+              r = await cdp('Debugger.setBreakpoint', { location }, t);
+            }
+            s.bps.set(r.breakpointId, { kind: 'callsite', name: f.fn, url: f.url || '' });
             armed.push(f.fn);
           } catch (_) { /* not breakable here */ }
         }

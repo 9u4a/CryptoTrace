@@ -86,3 +86,11 @@ Keys with `source: "session"` + a `capture` rule are filled from live responses 
   another algorithm family, add it to `tracedSpec`'s `algs` (it must be buildable by `symmetricCipher`).
 - **SEED**: built in (`server/src/seed.mjs`, Node's OpenSSL has none) as a `createCipheriv` look-alike; other
   non-OpenSSL block ciphers can be added the same way and routed in `symmetricCipher`.
+
+## Coverage lab
+`samples/coverage/cases.mjs` holds one case per real-world encryption shape, each with the level CryptoTrace
+should reach. `node scripts/coverage.mjs [--only id,id] [--verbose] [--docs]` runs them all in headless Chrome
+through the panel pipeline and the crypto server (needs Chrome; `CHROME=<path>` to pick one) and writes
+`output/coverage-report.md` (`docs/COVERAGE.md` with `--docs`). Add a case for every new target shape you support,
+and for every limit you document. The `apply` location `cookie` (one cookie in the Cookie header, `urlEncoded`
+learned at capture) has no Scanner insertion point yet.

@@ -678,11 +678,17 @@
   const CAND = /^[A-Za-z0-9+/=_-]{16,}$/;
   let inSink = false;
   const FRAME_RE = /^\s*at (?:(.+?) \()?((?:https?|file|blob):[^\s)]+?):(\d+):(\d+)\)?\s*$/;
+  // Code run through eval / new Function has no URL: "at f (eval at <anonymous> (page:1:2), <anonymous>:L:C)".
+  // Kept as {url: '', eval: true}; the tracer finds the eval'd script by its source. (Our own injected hook
+  // has neither form, so its frames are still dropped.)
+  const EVAL_FRAME_RE = /^\s*at (?:(.+?) \()?eval at .*, <anonymous>:(\d+):(\d+)\)?\s*$/;
   const framesOf = (stack) => {
     const out = [];
     for (const line of String(stack || '').split('\n')) {
-      const m = line.match(FRAME_RE); // frames without a URL (this injected hook) are dropped
+      const m = line.match(FRAME_RE);
+      const e = !m && line.match(EVAL_FRAME_RE);
       if (m) out.push({ fn: m[1] || '(anonymous)', url: m[2], line: Number(m[3]), col: Number(m[4]) });
+      else if (e) out.push({ fn: e[1] || '(anonymous)', url: '', eval: true, line: Number(e[2]), col: Number(e[3]) });
       if (out.length >= 12) break;
     }
     return out;

@@ -63,10 +63,27 @@ export async function launchChrome(chromePath) {
       const { targetId } = await cdp('Target.createTarget', { url: 'about:blank' });
       const { sessionId: s } = await cdp('Target.attachToTarget', { targetId, flatten: true });
       const tab = { s, targetId, records: [], parsed: [], listeners: [] };
+      // Every record / parsed script is tagged with the session it came from (the page, or a worker/iframe).
       tab._event = (m) => {
-        if (m.method === 'Runtime.bindingCalled' && m.params.name === '__cryptotrace_emit') { try { tab.records.push(JSON.parse(m.params.payload)); } catch (_) {} }
-        if (m.method === 'Debugger.scriptParsed') tab.parsed.push(m.params);
+        if (m.method === 'Runtime.bindingCalled' && m.params.name === '__cryptotrace_emit') {
+          try { const r = JSON.parse(m.params.payload); r.__session = m.sessionId; tab.records.push(r); } catch (_) {}
+        }
+        if (m.method === 'Debugger.scriptParsed') tab.parsed.push({ ...m.params, __session: m.sessionId });
+        if (m.method === 'Target.attachedToTarget') attachChild(m.params).catch(() => {});
         for (const l of tab.listeners) l(m);
+      };
+      // Workers and iframes, as panel.js reaches them: auto-attach paused, inject, then let them run.
+      const attachChild = async ({ sessionId: c, targetInfo }) => {
+        sessions.set(c, tab);
+        const isWorker = /worker/.test((targetInfo && targetInfo.type) || '');
+        await cdp('Runtime.enable', {}, c);
+        await cdp('Runtime.addBinding', { name: '__cryptotrace_emit' }, c);
+        await cdp('Debugger.enable', {}, c).catch(() => {});
+        await cdp('Debugger.setSkipAllPauses', { skip: true }, c).catch(() => {});
+        if (isWorker) await cdp('Runtime.evaluate', { expression: hookSource }, c).catch(() => {});
+        else await cdp('Page.addScriptToEvaluateOnNewDocument', { source: hookSource }, c).catch(() => {});
+        await cdp('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, c).catch(() => {});
+        await cdp('Runtime.runIfWaitingForDebugger', {}, c).catch(() => {});
       };
       sessions.set(s, tab);
       await cdp('Page.enable', {}, s);
@@ -75,6 +92,7 @@ export async function launchChrome(chromePath) {
       await cdp('Debugger.enable', {}, s);
       await cdp('Debugger.setSkipAllPauses', { skip: true }, s);
       await cdp('Page.addScriptToEvaluateOnNewDocument', { source: hookSource }, s);
+      await cdp('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, s);
       await cdp('Page.navigate', { url }, s);
       await sleep(settle);
       tab.evaluate = async (expression) => {

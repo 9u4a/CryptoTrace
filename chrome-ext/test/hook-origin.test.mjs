@@ -62,3 +62,16 @@ test('join stays transparent for ordinary calls', () => {
   assert.equal(['a', 'b'].join(), 'a,b');
   assert.equal(Array.prototype.join.call({ length: 2, 0: 'x', 1: 'y' }, ''), 'xy');
 });
+
+test('a value built inside eval / new Function code is traced to that frame (no URL: marked eval)', async () => {
+  records.length = 0;
+  const make = new Function('return function _0xe(t) { var b = [...t].map(function (c) { return c.charCodeAt(0) ^ 7; }); return btoa(String.fromCharCode.apply(null, b)); };')();
+  await fetch('/api/e', { method: 'POST', body: JSON.stringify({ v: make('eval built secret value') }) });
+  const o = origins();
+  assert.equal(o.length, 1);
+  const f = o[0].frames.find((x) => x.fn === '_0xe');
+  assert.ok(f, JSON.stringify(o[0].frames));
+  assert.equal(f.eval, true);
+  assert.equal(f.url, '');
+  assert.ok(f.line >= 1 && f.col >= 1);
+});

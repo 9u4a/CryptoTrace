@@ -81,7 +81,8 @@ async function attach() {
   });
   attached = true;
   // L3 function tracer (tracer.js): started per "unknown" row; its records go through addRecord like hooks'.
-  tracer = window.CryptoTraceTracer.createTracer({ cdp, emit: (r) => addRecord(r), keyOf: (t) => t.sessionId || 'main' });
+  tracer = window.CryptoTraceTracer.createTracer({ cdp, emit: (r) => addRecord(r), keyOf: (t) => t.sessionId || 'main',
+    scriptsOf: (t) => scriptsBySession.get(t.sessionId || 'main') || [] });
   await cdp('Page.enable');
   await installInto(DEBUGGEE);
   // Reach workers, iframes and popups: attach to child targets as they appear.
@@ -119,7 +120,13 @@ async function enableScan(target) {
   }
 }
 
+// Parsed scripts per session (page = 'main', workers/iframes by sessionId): the tracer resolves eval frames with it.
+const scriptsBySession = new Map();
+
 async function scanScript(target, p) {
+  const sk = target.sessionId || 'main';
+  if (!scriptsBySession.has(sk)) scriptsBySession.set(sk, []);
+  scriptsBySession.get(sk).push({ scriptId: p.scriptId, url: p.url || '' });
   if (!signatures || !window.CryptoTraceScan) return;
   if (/^(chrome-extension|devtools|chrome):/.test(p.url || '') || (p.length || 0) > MAX_SCAN_BYTES) return;
   const key = p.hash || p.scriptId;
@@ -154,7 +161,12 @@ function onEvent(source, method, params) {
     return;
   }
   if (method === 'Runtime.bindingCalled' && params.name === BINDING) {
-    try { addRecord(JSON.parse(params.payload)); } catch (_) {}
+    try {
+      const rec = JSON.parse(params.payload);
+      // where it came from (page or a worker/iframe session): tracing an unknown value runs in that realm
+      Object.defineProperty(rec, '__target', { value: source.sessionId ? { tabId, sessionId: source.sessionId } : DEBUGGEE, enumerable: false });
+      addRecord(rec);
+    } catch (_) {}
     return;
   }
   if (method === 'Target.attachedToTarget') {
@@ -394,7 +406,7 @@ function renderDetail(rec) {
     btn.onclick = async () => {
       btn.disabled = true;
       try {
-        const armed = await tracer.traceFrames(DEBUGGEE, tracer.pickFrames(rec.origin.frames));
+        const armed = await tracer.traceFrames(rec.origin.__target || DEBUGGEE, tracer.pickFrames(rec.origin.frames));
         rec.traceArmed = true;
         lastDetail = '';
         renderDetail(rec);

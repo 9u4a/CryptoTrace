@@ -10,7 +10,7 @@ import { parsePath } from './jsonpath.mjs';
 import { INTEGRITY_TYPES } from './integrity.mjs';
 
 export const SCHEMA_VERSION = 1;
-const LOCATIONS = ['json', 'body', 'header', 'query', 'form', 'multipart'];
+const LOCATIONS = ['json', 'body', 'header', 'query', 'form', 'multipart', 'cookie'];
 
 function fail(file, msg) {
   throw new Error(`${path.basename(file)}: ${msg}`);
@@ -115,7 +115,7 @@ function validateRules(file, rules = [], ciphers) {
   return rules.map((r, i) => {
     if (!LOCATIONS.includes(r.in)) fail(file, `apply rule #${i}: "in" must be one of ${LOCATIONS.join('/')}`);
     if (!(r.cipher in ciphers)) fail(file, `apply rule #${i}: unknown cipher "${r.cipher}"`);
-    if ((r.in === 'header' || r.in === 'query' || r.in === 'form' || r.in === 'multipart') && !r.name) fail(file, `apply rule #${i}: needs "name"`);
+    if ((r.in === 'header' || r.in === 'query' || r.in === 'form' || r.in === 'multipart' || r.in === 'cookie') && !r.name) fail(file, `apply rule #${i}: needs "name"`);
     // Optional pathRegex (0.3.0): the rule only applies to requests whose path matches -- lets one profile
     // hold a whole-body endpoint and a JSON-field endpoint on the same host without clobbering.
     let pathRe = null;

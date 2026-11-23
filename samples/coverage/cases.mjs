@@ -378,6 +378,136 @@ export const CASES = [
     },
     decrypt: (req) => aes('aes-128-cbc', Buffer.from('cov-dbl-key-0016'), Buffer.from('cov-dbl-iv--0016'), b64(JSON.parse(b64(req.json().wrapped).toString()).d)),
   },
+  // ---------------- round 2: harder real-world shapes ----------------
+  {
+    id: 'resp-cjs-body', group: 'response', title: 'Response: whole body CryptoJS AES-CBC, decrypted by the page', expect: 'auto', kind: 'response',
+    libs: ['/vendor/crypto-js-4.2.0.js'],
+    client() {
+      const K = CryptoJS.enc.Utf8.parse('cov-rsp-key-0016');
+      const IV = CryptoJS.enc.Utf8.parse('cov-rsp-iv--0016');
+      window.__run = async (plain) => {
+        const text = await (await fetch('/cov/resp-cjs-body/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ q: plain }) })).text();
+        window.__last = JSON.parse(CryptoJS.AES.decrypt(text, K, { iv: IV }).toString(CryptoJS.enc.Utf8));
+      };
+    },
+    decrypt: (req) => req.json().q,
+    respond: (plain) => { const c = crypto.createCipheriv('aes-128-cbc', Buffer.from('cov-rsp-key-0016'), Buffer.from('cov-rsp-iv--0016'));
+      return { type: 'text/plain', body: Buffer.concat([c.update(JSON.stringify({ echo: plain })), c.final()]).toString('base64') }; },
+  },
+  {
+    id: 'resp-wc-json-iv', group: 'response', title: 'Response: WebCrypto AES-CBC {iv, data} JSON, decrypted by the page', expect: 'auto', kind: 'response',
+    client() {
+      const kp = crypto.subtle.importKey('raw', new TextEncoder().encode('cov-rsw-key-0123456789abcdef0123'), 'AES-CBC', false, ['decrypt']);
+      const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+      window.__run = async (plain) => {
+        const j = await (await fetch('/cov/resp-wc-json-iv/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ q: plain }) })).json();
+        const pt = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: unb64(j.iv) }, await kp, unb64(j.data));
+        window.__last = JSON.parse(new TextDecoder().decode(pt));
+      };
+    },
+    decrypt: (req) => req.json().q,
+    respond: (plain) => { const iv = crypto.randomBytes(16); const c = crypto.createCipheriv('aes-256-cbc', Buffer.from('cov-rsw-key-0123456789abcdef0123'), iv);
+      return { type: 'application/json', body: JSON.stringify({ iv: iv.toString('base64'), data: Buffer.concat([c.update(JSON.stringify({ echo: plain })), c.final()]).toString('base64'), ok: true }) }; },
+  },
+  {
+    id: 'session-handshake', group: 'library', title: 'Key handed out by a handshake per page session, then CryptoJS AES', expect: 'auto',
+    note: 'valid for the captured session; a new session needs a re-capture or a session-key capture rule',
+    libs: ['/vendor/crypto-js-4.2.0.js'],
+    client() {
+      const keyP = fetch('/cov/session-handshake/key').then((r) => r.json());
+      window.__run = async (plain) => {
+        const { k, iv } = await keyP;
+        const data = CryptoJS.AES.encrypt(plain, CryptoJS.enc.Base64.parse(k), { iv: CryptoJS.enc.Base64.parse(iv) }).toString();
+        await fetch('/cov/session-handshake/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data }) });
+      };
+    },
+    decrypt: (req, ctx) => aes('aes-128-cbc', ctx.session.k, ctx.session.iv, b64(req.json().data)),
+  },
+  {
+    id: 'hmac-ts', group: 'integrity', title: 'X-Sign = HmacSHA256(data + "|" + X-Ts) with a timestamp header', expect: 'auto',
+    libs: ['/vendor/crypto-js-4.2.0.js'],
+    client() {
+      const K = CryptoJS.enc.Utf8.parse('cov-hts-key-0016');
+      const IV = CryptoJS.enc.Utf8.parse('cov-hts-iv--0016');
+      window.__run = async (plain) => {
+        const data = CryptoJS.AES.encrypt(plain, K, { iv: IV }).toString();
+        const ts = String(Date.now());
+        const sign = CryptoJS.HmacSHA256(data + '|' + ts, 'cov-hts-secret').toString();
+        await fetch('/cov/hmac-ts/api', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Ts': ts, 'X-Sign': sign }, body: JSON.stringify({ data }) });
+      };
+    },
+    decrypt: (req) => {
+      const data = req.json().data;
+      const want = crypto.createHmac('sha256', 'cov-hts-secret').update(data + '|' + req.headers['x-ts']).digest('hex');
+      if (req.headers['x-sign'] !== want) throw new Error('bad signature');
+      return aes('aes-128-cbc', Buffer.from('cov-hts-key-0016'), Buffer.from('cov-hts-iv--0016'), b64(data));
+    },
+  },
+  {
+    id: 'multi-field', group: 'transport', title: 'Two fields in one request, different keys and libraries (CryptoJS CBC + aes-js CTR)', expect: 'auto', markers: 2,
+    libs: ['/vendor/crypto-js-4.2.0.js', '/vendor/aes-js-3.1.2.js'],
+    client() {
+      const K1 = CryptoJS.enc.Utf8.parse('cov-mf1-key-0016');
+      const IV1 = CryptoJS.enc.Utf8.parse('cov-mf1-iv--0016');
+      const K2 = aesjs.utils.utf8.toBytes('cov-mf2-key-0016');
+      window.__run = async (plain) => {
+        const a = CryptoJS.AES.encrypt(plain, K1, { iv: IV1 }).toString();
+        const b = aesjs.utils.hex.fromBytes(new aesjs.ModeOfOperation.ctr(K2, new aesjs.Counter(1)).encrypt(aesjs.utils.utf8.toBytes(plain)));
+        await fetch('/cov/multi-field/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ a, b, n: 1 }) });
+      };
+    },
+    decrypt: (req) => { const j = req.json();
+      return aes('aes-128-cbc', Buffer.from('cov-mf1-key-0016'), Buffer.from('cov-mf1-iv--0016'), b64(j.a)) + ' | '
+        + aes('aes-128-ctr', Buffer.from('cov-mf2-key-0016'), Buffer.from('00000000000000000000000000000001', 'hex'), Buffer.from(j.b, 'hex')); },
+  },
+  {
+    id: 'cookie-token', group: 'transport', title: 'Ciphertext set with document.cookie and sent as a cookie', expect: 'auto',
+    libs: ['/vendor/crypto-js-4.2.0.js'],
+    client() {
+      const K = CryptoJS.enc.Utf8.parse('cov-ck-key--0016');
+      const IV = CryptoJS.enc.Utf8.parse('cov-ck-iv---0016');
+      window.__run = async (plain) => {
+        document.cookie = 'enc=' + encodeURIComponent(CryptoJS.AES.encrypt(plain, K, { iv: IV }).toString()) + '; path=/';
+        await fetch('/cov/cookie-token/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"x":1}' });
+      };
+    },
+    decrypt: (req) => {
+      const c = Object.fromEntries(String(req.headers.cookie || '').split(/;\s*/).filter(Boolean).map((p) => [p.split('=')[0], decodeURIComponent(p.slice(p.indexOf('=') + 1))]));
+      return aes('aes-128-cbc', Buffer.from('cov-ck-key--0016'), Buffer.from('cov-ck-iv---0016'), b64(c.enc));
+    },
+  },
+  {
+    id: 'worker-seed', group: 'no-api', title: 'SEED inside a Web Worker that also sends the request (no hookable API)', expect: 'trace',
+    client() {
+      const w = new Worker('/cov/worker-seed/worker.js');
+      window.__run = (plain) => new Promise((resolve) => { w.onmessage = () => resolve(); w.postMessage(plain); });
+    },
+    worker() {
+      importScripts('/shim/kisa-seed.js');
+      const WKEY = new TextEncoder().encode('cov-wrk-key--016');
+      const WIV = new TextEncoder().encode('cov-wrk-iv---016');
+      function sealInWorker(text) { const m = new TextEncoder().encode(text); return btoa(String.fromCharCode(...self.KISA_SEED_CBC.SEED_CBC_Encrypt(WKEY, WIV, m, 0, m.length))); }
+      self.onmessage = async (e) => {
+        await fetch('/cov/worker-seed/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ w: sealInWorker(e.data) }) });
+        self.postMessage('done');
+      };
+    },
+    decrypt: (req) => seedDec('cov-wrk-key--016', 'cov-wrk-iv---016', b64(req.json().w)),
+  },
+  {
+    id: 'eval-obfuscated', group: 'no-api', title: 'SEED site code run through new Function (eval script, no URL), names mangled', expect: 'trace',
+    libs: ['/shim/kisa-seed.js'],
+    client() {
+      const src = 'var _0x1=new TextEncoder().encode("cov-evl-key--016"),_0x2=new TextEncoder().encode("cov-evl-iv---016");'
+        + 'window._0xe=function _0xe(t){var m=new TextEncoder().encode(t);'
+        + 'return btoa(String.fromCharCode.apply(null,window.KISA_SEED_CBC.SEED_CBC_Encrypt(_0x1,_0x2,m,0,m.length)));};';
+      new Function(src)();
+      window.__run = async (plain) => {
+        await fetch('/cov/eval-obfuscated/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ v: window._0xe(plain) }) });
+      };
+    },
+    decrypt: (req) => seedDec('cov-evl-key--016', 'cov-evl-iv---016', b64(req.json().v)),
+  },
   {
     id: 'native-agent', group: 'out-of-scope', title: 'Ciphertext produced outside page JS (security-module agent on localhost)', expect: 'none',
     note: 'the page only relays a value it received; no crypto runs in the browser',

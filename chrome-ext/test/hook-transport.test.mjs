@@ -72,3 +72,11 @@ test('WebSocket.send messages are reported with the socket URL', async () => {
   assert.deepEqual(r.body, { kind: 'json', fields: [{ path: '$.t', value: 'msg' }, { path: '$.payload', value: 'U2VjcmV0UGF5bG9hZA==' }] });
   assert.deepEqual(ws.sent.length, 1, 'message still sent');
 });
+
+test('cookies set by the page are reported with each request', async () => {
+  globalThis.document = { cookie: 'sid=abc; enc=U2VjcmV0JTJCUGF5bG9hZA%3D%3D' };
+  try {
+    await fetch('/c', { method: 'POST', body: '{}' });
+    assert.deepEqual(lastSent().cookies, [['sid', 'abc'], ['enc', 'U2VjcmV0JTJCUGF5bG9hZA%3D%3D']]);
+  } finally { delete globalThis.document; }
+});

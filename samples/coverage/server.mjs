@@ -33,7 +33,7 @@ const WP_RUNTIME = `(() => {
 })();`;
 const wpChunk = () => `(self["webpackChunkcov_app"] = self["webpackChunkcov_app"] || []).push([[7], { 101: function (module, exports) {\n${vendor('crypto-js-4.2.0.js')}\n} }]);`;
 const esModule = (file) => `const module = { exports: {} }; let exports = module.exports; const define = undefined;\n${vendor(file)}\n;export default module.exports;\n`;
-const seedShim = () => `(function () { var exports = {};\n${vendor('kisa-seed-1.1.0.js')}\n;window.KISA_SEED_CBC = exports.KISA_SEED_CBC; })();\n`;
+const seedShim = () => `(function () { var exports = {};\n${vendor('kisa-seed-1.1.0.js')}\n;(typeof window !== 'undefined' ? window : self).KISA_SEED_CBC = exports.KISA_SEED_CBC; })();\n`;
 
 function page(c) {
   const libs = (c.libs || []).map((s) => `<script src="${s}"></script>`).join('\n');
@@ -56,7 +56,7 @@ export function createCoverageServer() {
     n: Buffer.from(jwk.n, 'base64url').toString('hex'),
     e: Buffer.from(jwk.e, 'base64url').toString('hex').replace(/^0+/, ''),
   };
-  const ctx = { rsa: privateKey };
+  const ctx = { rsa: privateKey, session: { k: crypto.randomBytes(16), iv: crypto.randomBytes(16) } };
   const last = new Map();
   const byId = new Map(CASES.map((c) => [c.id, c]));
 
@@ -79,17 +79,19 @@ export function createCoverageServer() {
           const c = crypto.createCipheriv('aes-128-cbc', Buffer.from('cov-agent-key-16'), Buffer.from('cov-agent-iv--16'));
           return send(res, 200, { ct: Buffer.concat([c.update(body), c.final()]).toString('base64') });
         }
+        if (p === '/cov/session-handshake/key') return send(res, 200, { k: ctx.session.k.toString('base64'), iv: ctx.session.iv.toString('base64') });
         if (p.startsWith('/vendor/')) return send(res, 200, vendor(path.basename(p)), 'text/javascript');
         if (p === '/shim/kisa-seed.js') return send(res, 200, seedShim(), 'text/javascript');
         if (p === '/mod/crypto-js.mjs') return send(res, 200, esModule('crypto-js-4.2.0.js'), 'text/javascript');
         if (p === '/mod/aes-js.mjs') return send(res, 200, esModule('aes-js-3.1.2.js'), 'text/javascript');
         if (p === '/wp/runtime.js') return send(res, 200, WP_RUNTIME, 'text/javascript');
         if (p === '/wp/crypto-js-chunk.js') return send(res, 200, wpChunk(), 'text/javascript');
-        const m = p.match(/^\/cov\/([\w-]+)(\/api|\/last)?$/);
+        const m = p.match(/^\/cov\/([\w-]+)(\/api|\/last|\/worker\.js)?$/);
         const c = m && byId.get(m[1]);
         if (!c) return send(res, 404, { error: 'not found' });
         if (!m[2]) return send(res, 200, page(c), 'text/html');
         if (m[2] === '/last') return send(res, 200, last.get(c.id) || null);
+        if (m[2] === '/worker.js' && c.worker) return send(res, 200, `(function ${c.worker.toString()})();`, 'text/javascript');
         // the case's API endpoint: keep the raw request, then decrypt it like the target would
         const raw = { method: req.method, path: req.url, headers: Object.entries(req.headers), body, accepted: false };
         last.set(c.id, raw);
@@ -99,6 +101,11 @@ export function createCoverageServer() {
           const plain = c.decrypt(r, ctx);
           raw.accepted = true;
           raw.plain = plain;
+          if (c.respond) { // an encrypted response the page decrypts; kept for the runner like the request
+            const r = c.respond(plain, ctx);
+            raw.response = { status: 200, headers: [['content-type', r.type]], body: r.body };
+            return send(res, 200, r.body, r.type);
+          }
           return send(res, 200, { ok: true, plain });
         } catch (e) {
           raw.error = e.message;
