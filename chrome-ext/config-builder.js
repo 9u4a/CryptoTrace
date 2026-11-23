@@ -119,14 +119,15 @@
   }
   // The ciphertext as it travels (what the server's decrypt sees) for a selftest vector: the cipher's
   // outEncoding, with the IV in front when the spec says so. Falls back to the recorded text.
-  function wireCiphertext(spec, ct, iv) {
+  function wireCiphertext(spec, ct, iv, tag) {
     const bytes = recBytes(ct);
     if (!bytes) return ct.value;
     const ivb = recBytes(iv);
     const prefix = spec.iv && spec.iv.from === 'prefix' && ivb ? ivb : [];
+    const tagb = recBytes(tag) || []; // an AEAD tag read separately (Node API): the server expects ct || tag
     const enc = spec.outEncoding || 'base64';
-    if (!prefix.length && enc === ct.encoding) return ct.value;
-    return encodeBytes(prefix.concat(bytes), enc);
+    if (!prefix.length && !tagb.length && enc === ct.encoding) return ct.value;
+    return encodeBytes(prefix.concat(bytes, tagb), enc);
   }
   function asText(v) {
     if (!v) return null;
@@ -153,6 +154,19 @@
     const spec = { alg: `aes-${aesBits(keyBytes)}-${m}`, inEncoding: 'utf8', outEncoding: 'base64' };
     if (m === 'cbc' || m === 'ecb') spec.padding = pkcs7Len(recBytes(r.op === 'encrypt' ? r.input : r.output)) ? 'pkcs7' : 'none';
     else spec.padding = 'none'; // stream modes
+    return spec;
+  }
+  // Node's crypto API (crypto-browserify): the algorithm name is already an OpenSSL name (or the old
+  // `aes256`-style alias for CBC). Ciphertext encoding = whatever the page asked update()/final() for.
+  function nodecryptoAlg(r) {
+    let name = String((r.alg && r.alg.name) || '').toLowerCase();
+    const alias = name.match(/^aes(128|192|256)$/);
+    if (alias) name = `aes-${alias[1]}-cbc`;
+    if (!name) return null;
+    const ct = r.op === 'encrypt' ? r.output : r.input;
+    const spec = { alg: name, inEncoding: 'utf8', outEncoding: ct && ct.encoding !== 'utf8' ? ct.encoding : 'base64' };
+    if (!/-(gcm|ctr|ccm|ocb|cfb\d*|ofb)$/.test(name) && name !== 'chacha20-poly1305') spec.padding = r.autoPadding === false ? 'none' : 'pkcs7';
+    if (r.tag) spec._note = 'GCM: the selftest assumes the tag follows the ciphertext -- check how the page sends it';
     return spec;
   }
   // Plaintext text for a selftest vector: aes-js plaintext still carries the page's PKCS#7 padding.
@@ -239,6 +253,7 @@
       else if (r.lib === 'cryptojs') spec = cryptojsAlg(r, keyBytes);
       else if (r.lib === 'jsencrypt') spec = { alg: 'rsa', padding: 'pkcs1' };
       else if (r.lib === 'aesjs') spec = aesjsAlg(r, keyBytes);
+      else if (r.lib === 'nodecrypto') spec = nodecryptoAlg(r);
       else if (r.lib === 'jsbn') spec = { alg: 'rsa', padding: 'pkcs1', inEncoding: 'utf8', outEncoding: 'hex' };
       if (!spec) continue;
 
@@ -308,7 +323,7 @@
             spec.iv = { from: 'prefix', length: placed.ivPrefix };
           }
           if (placed.encoding) spec.outEncoding = placed.encoding; // ciphertext re-encoded on the wire (e.g. hex)
-          if (!passphrase && r.iv && r.iv.value && !spec.iv) spec.iv = { value: r.iv.value, encoding: r.iv.encoding === 'base64' ? 'base64' : 'hex' };
+          if (!passphrase && r.iv && r.iv.value && !spec.iv) spec.iv = { value: r.iv.value, encoding: r.iv.encoding === 'base64' || r.iv.encoding === 'utf8' ? r.iv.encoding : 'hex' };
           cfg.ciphers[id] = spec;
         }
       }
@@ -326,7 +341,7 @@
       const ct = r.op === 'encrypt' ? r.output : r.input;
       if (plain != null && ct && ct.value != null) {
         const c = cfg.ciphers[id];
-        const vec = { cipher: id, plain, ciphertext: wireCiphertext(c, ct, r.iv) };
+        const vec = { cipher: id, plain, ciphertext: wireCiphertext(c, ct, r.iv, r.tag) };
         if (c.iv && c.iv.from === 'field') {
           const ivb = recBytes(r.iv);
           if (!ivb) continue; // no IV to check this vector with

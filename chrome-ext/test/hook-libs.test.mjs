@@ -147,3 +147,46 @@ test('aes-js ModeOfOperation (CBC, CTR, CFB) is captured with key, per-call IV/c
   new A.ModeOfOperation.cfb([...key], [...iv], 1).encrypt(A.utils.utf8.toBytes('cfb8'));
   assert.deepEqual({ ...last('aesjs', 'encrypt').alg }, { name: 'AES', mode: 'cfb', segmentSize: 1 });
 });
+
+test('Node-crypto API in a webpack module (crypto-browserify polyfill shape) is captured via createCipheriv', async () => {
+  // webpack 4 injects crypto-browserify when app code does `import crypto from 'crypto'`; its exports have
+  // Node's API. Node's own crypto stands in for it here, exported from a module in a webpack 5 chunk.
+  globalThis.webpackChunkdemo_app = [];
+  await new Promise((r) => setTimeout(r, 700)); // the hook's webpackChunk poll finds the array
+  const factories = { 42: function (module) { module.exports = { createCipheriv: crypto.createCipheriv, createDecipheriv: crypto.createDecipheriv,
+    createHash: crypto.createHash, randomBytes: crypto.randomBytes }; } };
+  globalThis.webpackChunkdemo_app.push([[7], factories]); // queued before the runtime loads
+  globalThis.webpackChunkdemo_app.push = function webpackJsonpCallback() {}; // the runtime installs its callback
+  const module = { exports: {} };
+  factories[42](module, module.exports); // webpack runs the (now wrapped) factory
+  const C = module.exports;
+  assert.ok(C.__ct_wrapped, 'module exports detected and wrapped');
+  assert.ok(!globalThis.crypto.subtle.__ct_wrapped && typeof globalThis.crypto.createCipheriv === 'undefined', 'WebCrypto global untouched');
+
+  const key = crypto.randomBytes(32), iv = crypto.randomBytes(16);
+  const c = C.createCipheriv('aes-256-cbc', key, iv);
+  const ct = c.update('node api text', 'utf8', 'base64') + c.final('base64');
+  const d = crypto.createDecipheriv('aes-256-cbc', key, iv);
+  assert.equal(d.update(ct, 'base64', 'utf8') + d.final('utf8'), 'node api text', 'output unchanged');
+  const rec = last('nodecrypto', 'encrypt');
+  assert.ok(rec, 'encrypt captured');
+  assert.equal(rec.alg.name, 'aes-256-cbc');
+  assert.equal(rec.key.value, key.toString('base64'));
+  assert.equal(rec.iv.value, iv.toString('base64'));
+  assert.deepEqual({ ...rec.input }, { encoding: 'utf8', value: 'node api text' });
+  assert.deepEqual({ ...rec.output }, { encoding: 'base64', value: ct });
+
+  const iv12 = crypto.randomBytes(12);
+  const g = C.createCipheriv('aes-256-gcm', key, iv12);
+  const gct = Buffer.concat([g.update(Buffer.from('gcm bytes')), g.final()]);
+  const tag = g.getAuthTag();
+  const gr = last('nodecrypto', 'encrypt');
+  assert.equal(gr.output.value, gct.toString('base64'));
+  assert.equal(gr.tag.value, tag.toString('base64'), 'GCM tag recorded');
+
+  const dd = C.createDecipheriv('aes-256-cbc', key, iv);
+  dd.setAutoPadding(false);
+  dd.update(Buffer.from(ct, 'base64'));
+  dd.final();
+  assert.equal(last('nodecrypto', 'decrypt').autoPadding, false);
+});

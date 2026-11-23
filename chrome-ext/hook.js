@@ -441,6 +441,59 @@
     }
   };
 
+  // Node's crypto API as bundled for the browser (crypto-browserify, which webpack 4 injects for
+  // `import crypto from 'crypto'`): createCipheriv(alg, key, iv) -> update()/final() streams. Strings keep
+  // their encoding label; Buffers (Uint8Array subclasses) become base64. One record per stream, at final().
+  const chunkJoin = (parts) => {
+    if (!parts.length) return null;
+    if (parts.every((p) => typeof p.v === 'string')) {
+      const encs = new Set(parts.map((p) => p.e));
+      return encs.size === 1 ? { encoding: parts[0].e, value: parts.map((p) => p.v).join('') } : null;
+    }
+    if (parts.some((p) => typeof p.v === 'string')) return null; // mixed string/bytes: not representable
+    const len = parts.reduce((n, p) => n + p.v.byteLength, 0);
+    const all = new Uint8Array(len);
+    let o = 0;
+    for (const p of parts) { all.set(bytesOf(p.v), o); o += p.v.byteLength; }
+    return enc(all);
+  };
+  const piece = (v, e) => (v == null ? null : typeof v === 'string' ? { v, e: e || 'utf8' } : ArrayBuffer.isView(v) ? { v } : null);
+  const installNodeCrypto = (X) => {
+    if (!X || X.__ct_wrapped) return;
+    mark(X);
+    const factory = (fnName, op) => wrap(X, fnName, (orig) => function (algorithm, key, iv) {
+      const where = site();
+      const c = orig.apply(this, arguments);
+      try {
+        const ins = [], outs = [];
+        let autoPadding = true, tag = null, aad = null;
+        const keep = (list, p) => { if (p) list.push(p); };
+        const w = (name, make) => { if (typeof c[name] === 'function') { const o = c[name]; c[name] = make(o); } };
+        w('update', (o) => function (data, inEnc, outEnc) {
+          keep(ins, piece(data, inEnc));
+          const r = o.apply(this, arguments);
+          keep(outs, piece(r, outEnc));
+          return r;
+        });
+        w('setAutoPadding', (o) => function (on) { autoPadding = on !== false; return o.apply(this, arguments); });
+        w('setAAD', (o) => function (buf) { aad = bytesEnc(buf); return o.apply(this, arguments); });
+        w('setAuthTag', (o) => function (t) { tag = bytesEnc(t); return o.apply(this, arguments); });
+        w('final', (o) => function (outEnc) {
+          const r = o.apply(this, arguments);
+          keep(outs, piece(r, outEnc));
+          if (op === 'encrypt' && typeof this.getAuthTag === 'function') { try { tag = bytesEnc(this.getAuthTag()); } catch (_) {} }
+          send({ lib: 'nodecrypto', op, alg: { name: String(algorithm).toLowerCase() }, key: bytesEnc(key) || (typeof key === 'string' ? { encoding: 'utf8', value: key } : null),
+            iv: bytesEnc(iv) || (typeof iv === 'string' ? { encoding: 'utf8', value: iv } : null),
+            input: chunkJoin(ins), output: chunkJoin(outs), autoPadding, tag, aad, site: where });
+          return r;
+        });
+      } catch (_) { /* leave the stream usable even if wrapping fails */ }
+      return c;
+    });
+    factory('createCipheriv', 'encrypt');
+    factory('createDecipheriv', 'decrypt');
+  };
+
   // Object-exporting crypto libraries. To add one: write an installer above and append
   // { name, detect, install } here — it is then hooked both as a global and inside webpack bundles.
   const isCryptoJS = (x) => x && x.AES && typeof x.AES.encrypt === 'function' && x.enc && x.lib;
@@ -451,15 +504,19 @@
     { name: 'sjcl', detect: isSjcl, install: installSjcl },
     { name: 'forge', detect: isForge, install: installForge },
     { name: 'RSAKey', detect: isRSAKey, install: installJsbnRSA },
+    // no global name: only ever found as a bundled module's exports (a `crypto` global is WebCrypto)
+    { name: null, detect: (x) => x && typeof x.createCipheriv === 'function' && typeof x.createDecipheriv === 'function'
+      && typeof x.createHash === 'function' && typeof x.randomBytes === 'function', install: installNodeCrypto },
     { name: 'aesjs', detect: (x) => x && x.ModeOfOperation && typeof x.ModeOfOperation.cbc === 'function' && x.padding, install: installAesjs },
     { name: 'jsbn', detect: (x) => x && isRSAKey(x.RSAKey), install: (x) => installJsbnRSA(x.RSAKey) },
   ];
-  for (const l of LIBS) trapGlobal(l.name, l.install);
+  for (const l of LIBS) if (l.name) trapGlobal(l.name, l.install);
   // A top-level `function RSAKey() {}` in a classic script REPLACES the trap above without calling its
   // setter (global function declarations redefine the property). So also sweep the globals once the page
   // has loaded its scripts, and a few more times while the webpack poll below runs.
   const sweepGlobals = () => {
     for (const l of LIBS) {
+      if (!l.name) continue;
       try { const v = globalThis[l.name]; if (v && l.detect(v)) l.install(v); } catch (_) {}
     }
   };

@@ -484,3 +484,41 @@ test('aes-js records -> OpenSSL cipher names, PKCS#7 detected from the padded in
   const nopad = aesjsRecord('cbc', crypto.randomBytes(32), iv, 'exactly 16 bytes', { pad: false });
   assert.equal(buildConfig([nopad]).ciphers.c1.padding, 'none');
 });
+
+test('Node-crypto API records (crypto-browserify) -> cipher spec from the algorithm name; all self-test', () => {
+  const buildConfig = loadBuilder();
+  const base = { lib: 'nodecrypto', op: 'encrypt', frame: 'https://api.shop.test/', autoPadding: true, tag: null, aad: null };
+  // string in/out with encodings, utf8 key + iv strings, 'aes256' alias (= aes-256-cbc)
+  const k = 'k'.repeat(32), iv = 'i'.repeat(16);
+  const c1 = crypto.createCipheriv('aes-256-cbc', Buffer.from(k), Buffer.from(iv));
+  const ct1 = c1.update('alias text', 'utf8', 'hex') + c1.final('hex');
+  const r1 = { ...base, alg: { name: 'aes256' }, key: { encoding: 'utf8', value: k }, iv: { encoding: 'utf8', value: iv },
+    input: { encoding: 'utf8', value: 'alias text' }, output: { encoding: 'hex', value: ct1 } };
+  // GCM with bytes in/out and a separately read tag
+  const key = crypto.randomBytes(32), iv12 = crypto.randomBytes(12);
+  const g = crypto.createCipheriv('aes-256-gcm', key, iv12);
+  const gct = Buffer.concat([g.update('gcm text'), g.final()]);
+  const r2 = { ...base, alg: { name: 'aes-256-gcm' }, key: { encoding: 'base64', value: b64(key) }, iv: { encoding: 'base64', value: b64(iv12) },
+    input: { encoding: 'base64', value: b64(Buffer.from('gcm text')) }, output: { encoding: 'base64', value: b64(gct) },
+    tag: { encoding: 'base64', value: b64(g.getAuthTag()) } };
+  // no auto padding, the page zero-pads by itself
+  const n = crypto.createCipheriv('aes-128-cbc', key.subarray(0, 16), iv12.subarray(0, 12).length ? Buffer.alloc(16, 1) : null);
+  n.setAutoPadding(false);
+  const nct = Buffer.concat([n.update(Buffer.from('sixteen byte msg')), n.final()]);
+  const r3 = { ...base, autoPadding: false, alg: { name: 'aes-128-cbc' }, key: { encoding: 'base64', value: b64(key.subarray(0, 16)) },
+    iv: { encoding: 'base64', value: b64(Buffer.alloc(16, 1)) }, input: { encoding: 'utf8', value: 'sixteen byte msg' }, output: { encoding: 'base64', value: b64(nct) } };
+
+  const want = [
+    [r1, { alg: 'aes-256-cbc', padding: 'pkcs7', outEncoding: 'hex', iv: { value: iv, encoding: 'utf8' } }],
+    [r2, { alg: 'aes-256-gcm', outEncoding: 'base64' }],
+    [r3, { alg: 'aes-128-cbc', padding: 'none' }],
+  ];
+  for (const [rec, w] of want) {
+    const cfg = buildConfig([rec]);
+    const c = JSON.parse(JSON.stringify(cfg.ciphers.c1));
+    for (const [f, v] of Object.entries(w)) assert.deepEqual(c[f], v, `${w.alg} ${f}`);
+    const res = loadIntoEngine(cfg);
+    assert.equal(res.error, undefined, res.error);
+    assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }], w.alg + ' ' + JSON.stringify(res.selftest));
+  }
+});
