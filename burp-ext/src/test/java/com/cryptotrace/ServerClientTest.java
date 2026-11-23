@@ -76,4 +76,14 @@ class ServerClientTest {
         client.close();
         assertThrows(ServerClient.ServerException.class, () -> client.call("health", null));
     }
+
+    @Test
+    void restartingNeverFailsTheNewServersCalls() throws Exception {
+        // The old process's reader thread used to fail EVERY pending call when it died -- including the new
+        // process's first call (Burp showed "health failed: crypto server exited (code 1)" after Send to Burp).
+        for (int i = 0; i < 15; i++) {
+            client.start(ServerClient.command("node", ROOT.resolve("server/src/main.mjs").toString()));
+            assertEquals("0.2.0", client.call("health", null).get("version").getAsString(), "restart #" + i);
+        }
+    }
 }

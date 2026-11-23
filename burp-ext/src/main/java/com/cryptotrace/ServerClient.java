@@ -27,6 +27,8 @@ public final class ServerClient implements AutoCloseable {
     public static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
 
     private final Map<Integer, CompletableFuture<JsonObject>> pending = new ConcurrentHashMap<>();
+    // which process each pending call went to: a dying process fails only its own calls, never the new one's
+    private final Map<Integer, Process> pendingProc = new ConcurrentHashMap<>();
     private final AtomicInteger seq = new AtomicInteger();
     private final Consumer<String> log;
     private final long timeoutMs;
@@ -79,8 +81,12 @@ public final class ServerClient implements AutoCloseable {
             // process ended
         }
         IOException gone = new IOException(exitReason(p));
-        pending.values().forEach(f -> f.completeExceptionally(gone));
-        pending.clear();
+        for (Map.Entry<Integer, Process> e : pendingProc.entrySet()) {
+            if (e.getValue() != p) continue; // a call to the restarted (new) process stays pending
+            CompletableFuture<JsonObject> f = pending.remove(e.getKey());
+            pendingProc.remove(e.getKey());
+            if (f != null) f.completeExceptionally(gone);
+        }
     }
 
     private void errLoop(Process p) {
@@ -127,10 +133,12 @@ public final class ServerClient implements AutoCloseable {
         req.addProperty("id", id);
         req.addProperty("op", op);
         CompletableFuture<JsonObject> f = new CompletableFuture<>();
-        pending.put(id, f);
         try {
             byte[] line = (GSON.toJson(req) + "\n").getBytes(StandardCharsets.UTF_8);
             synchronized (this) {
+                if (process == null) throw new ServerException("crypto server is not running");
+                pending.put(id, f);
+                pendingProc.put(id, process);
                 stdin.write(line);
                 stdin.flush();
             }
@@ -149,6 +157,7 @@ public final class ServerClient implements AutoCloseable {
             throw new ServerException(op + " failed: " + e.getMessage());
         } finally {
             pending.remove(id);
+            pendingProc.remove(id);
         }
     }
 

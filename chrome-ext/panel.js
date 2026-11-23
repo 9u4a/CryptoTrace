@@ -537,7 +537,22 @@ el('autoSend').onchange = () => {
 
 async function sendToBurp(manual) {
   const { cfg, skipped } = loadableConfig(buildConfig(records));
-  const note = skipped.length ? ` · ${skipped.length}개 위치 제외(키 미포착: ${skipped.map((x) => x.split(':')[0]).join(', ')})` : '';
+  // Left-out locations grouped by their actual reason (loadableConfig: "<side> <where>: <reason>").
+  const REASONS = [
+    [/per request/, '요청마다 키가 바뀜(고정 키 아님)'],
+    [/RSA key not captured/, 'RSA 키 미포착'],
+    [/custom module/, '커스텀 모듈 필요'],
+    [/key not captured/, '키 미포착'],
+  ];
+  const groups = new Map();
+  for (const x of skipped) {
+    const i = x.indexOf(': ');
+    const where = i < 0 ? x : x.slice(0, i);
+    const why = (REASONS.find(([re]) => re.test(x)) || [null, x.slice(i + 2)])[1];
+    if (!groups.has(why)) groups.set(why, []);
+    groups.get(why).push(where);
+  }
+  const note = skipped.length ? ` · ${skipped.length}개 위치 제외 — ` + [...groups].map(([why, ws]) => `${why}: ${ws.join(', ')}`).join(' / ') : '';
   if (!Object.keys(cfg.ciphers || {}).length) {
     if (manual) setStatus(skipped.length ? '보낼 수 있는 설정이 없습니다' + note : '보낼 암호화 설정이 아직 없습니다 (Hook ON 후 암호화 동작을 실행하세요)', true);
     return;
