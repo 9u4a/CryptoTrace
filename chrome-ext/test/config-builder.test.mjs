@@ -298,3 +298,51 @@ test('whole-body and JSON-field endpoints on one host get pinned paths, load wit
   assert.equal(prof.request.body, JSON.stringify(JSON.parse(profPlain), null, 2)); // whole-body JSON is pretty-printed
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('WebCrypto RSA-OAEP with a captured key (spki or JWK) -> rsa cipher with its key, loads and round-trips', () => {
+  const buildConfig = loadBuilder();
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const spki = b64(publicKey.export({ type: 'spki', format: 'der' }));
+  const ct = crypto.publicEncrypt({ key: publicKey, oaepHash: 'sha256' }, Buffer.from('secret')).toString('base64');
+  const cfg = buildConfig([
+    { lib: 'webcrypto', op: 'encrypt', alg: { name: 'RSA-OAEP' }, key: { encoding: 'base64', value: spki },
+      input: { encoding: 'utf8', value: 'secret' }, output: { encoding: 'base64', value: ct },
+      apply: { in: 'json', path: '$.ek' }, frame: 'https://api.shop.test/' },
+  ]);
+  const c = cfg.ciphers.c1;
+  assert.equal(c.alg, 'rsa');
+  assert.equal(c.padding, 'oaep');
+  assert.ok(c.publicKey, 'publicKey filled from the capture');
+  assert.equal(cfg.keys[c.publicKey].value, spki);
+  assert.equal(c._note, undefined, 'no "add keys manually" note when the key was captured');
+  const res = loadIntoEngine(cfg);
+  assert.equal(res.error, undefined, res.error);
+
+  // decrypt side with a JWK private key -> privateKey
+  const jwk = JSON.stringify(privateKey.export({ format: 'jwk' }));
+  const cfg2 = buildConfig([
+    { lib: 'webcrypto', op: 'decrypt', alg: { name: 'RSA-OAEP', hash: 'SHA-256' }, key: { encoding: 'jwk', value: jwk },
+      input: { encoding: 'base64', value: ct }, output: { encoding: 'base64', value: b64(Buffer.from('secret')) }, frame: 'https://api.shop.test/' },
+  ]);
+  const c2 = cfg2.ciphers.c1;
+  assert.equal(cfg2.keys[c2.privateKey].value, jwk);
+  assert.equal(cfg2.keys[c2.privateKey].encoding, 'utf8');
+  const res2 = loadIntoEngine(cfg2);
+  assert.equal(res2.error, undefined, res2.error);
+  assert.ok(res2.selftest.length && res2.selftest.every((t) => t.ok), JSON.stringify(res2.selftest));
+});
+
+test('a key that changes between captures at one location is flagged per-request and skipped on Send to Burp', () => {
+  const sandbox = { window: {}, URL, Date };
+  vm.runInNewContext(fs.readFileSync(path.join(HERE, '../config-builder.js'), 'utf8'), sandbox);
+  const rec = (keyByte, ctx) => ({ lib: 'webcrypto', op: 'encrypt', alg: { name: 'AES-GCM' },
+    key: { encoding: 'base64', value: b64(Buffer.alloc(32, keyByte)) }, input: { encoding: 'utf8', value: 'p' },
+    output: { encoding: 'base64', value: ctx }, apply: { in: 'json', path: '$.ct' }, frame: 'https://api.shop.test/' });
+  const cfg = sandbox.window.buildConfig([rec(1, 'AAAAAAAAAAAA'), rec(2, 'BBBBBBBBBBBB')]);
+  assert.equal(Object.keys(cfg.ciphers).length, 1);
+  assert.equal(cfg.ciphers.c1._perRequestKey, true);
+  assert.equal(cfg.selftest.length, 1, 'only the vector made with the cipher key is kept');
+  const { cfg: out, skipped } = sandbox.window.loadableConfig(cfg);
+  assert.deepEqual(Object.keys(out.ciphers), []);
+  assert.match(skipped[0], /key changes per request/);
+});

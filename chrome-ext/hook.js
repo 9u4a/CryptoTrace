@@ -24,8 +24,11 @@
   };
 
   // ---- helpers -----------------------------------------------------------
+  // A view covers only [byteOffset, byteOffset+byteLength) of its buffer -- never encode the whole buffer.
+  const bytesOf = (v) => (v instanceof ArrayBuffer ? new Uint8Array(v)
+    : ArrayBuffer.isView(v) ? new Uint8Array(v.buffer, v.byteOffset, v.byteLength) : null);
   const toB64 = (buf) => {
-    const b = new Uint8Array(buf);
+    const b = bytesOf(buf) || new Uint8Array(0);
     let s = '';
     for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
     return btoa(s);
@@ -33,9 +36,7 @@
   const enc = (v) => {
     if (v == null) return null;
     if (typeof v === 'string') return { encoding: 'utf8', value: v };
-    if (v instanceof ArrayBuffer || ArrayBuffer.isView(v)) {
-      return { encoding: 'base64', value: toB64(v instanceof ArrayBuffer ? v : v.buffer) };
-    }
+    if (v instanceof ArrayBuffer || ArrayBuffer.isView(v)) return { encoding: 'base64', value: toB64(v) };
     return null;
   };
   // null/undefined → "": libraries encrypt them as the empty string, so the selftest vector must match.
@@ -89,39 +90,151 @@
 
   // ---- WebCrypto (SubtleCrypto) ------------------------------------------
   // Capture raw key bytes at importKey time (keys may be non-extractable later).
+  // The call site is captured synchronously in every wrapper: inside a promise callback the page's frame
+  // is gone from the stack (unless the page happens to `await`).
   const subtle = globalThis.crypto && globalThis.crypto.subtle;
   if (subtle) {
-    const keyInfo = new WeakMap(); // CryptoKey -> {alg, bytes?}
-    wrap(subtle, 'importKey', (orig) => function (format, keyData, algorithm, extractable, usages) {
-      const p = orig.apply(this, arguments);
-      return p.then((key) => {
-        const alg = typeof algorithm === 'string' ? { name: algorithm } : algorithm;
-        keyInfo.set(key, { alg, key: format === 'raw' || format === 'pkcs8' || format === 'spki' ? enc(keyData) : null, format });
-        send({ lib: 'webcrypto', op: 'importKey', alg, format, key: keyInfo.get(key).key, site: site() });
+    const O = {}; // the real methods, for our own internal calls (which must not be recorded)
+    for (const n of ['importKey', 'exportKey']) O[n] = subtle[n];
+    const keyInfo = new WeakMap(); // CryptoKey -> { key: {encoding, value} }
+    const b64urlToB64 = (s) => { const t = String(s).replace(/-/g, '+').replace(/_/g, '/'); return t + '='.repeat((4 - (t.length % 4)) % 4); };
+    // Key material as the page supplied it. A symmetric JWK becomes its raw bytes (what every cipher spec
+    // wants); an asymmetric JWK is kept whole.
+    const keyMaterial = (format, data) => {
+      if (format === 'jwk') {
+        if (!data || typeof data !== 'object') return null;
+        if (data.kty === 'oct' && typeof data.k === 'string') return { encoding: 'base64', value: b64urlToB64(data.k) };
+        return { encoding: 'jwk', value: JSON.stringify(data) };
+      }
+      return enc(data);
+    };
+    const algOf = (a) => (typeof a === 'string' ? { name: a } : a);
+    // Algorithm params as JSON: byte fields (iv/salt/info/label/...) encoded, a CryptoKey (ECDH `public`) as its bytes.
+    const algParams = (a) => {
+      a = algOf(a);
+      if (!a || typeof a !== 'object') return a;
+      const out = {};
+      for (const k of Object.keys(a)) {
+        const v = a[k];
+        if (v instanceof ArrayBuffer || ArrayBuffer.isView(v)) out[k] = enc(v);
+        else if (typeof CryptoKey !== 'undefined' && v instanceof CryptoKey) out[k] = (keyInfo.get(v) || {}).key || null;
+        else if (v && typeof v === 'object') out[k] = algParams(v);
+        else out[k] = v;
+      }
+      return out;
+    };
+    // Raw bytes of an extractable key, via the real exportKey (not recorded).
+    const exportBytes = async (key) => {
+      const format = key.type === 'secret' ? 'raw' : key.type === 'public' ? 'spki' : 'pkcs8';
+      return { encoding: 'base64', value: toB64(await O.exportKey.call(subtle, format, key)) };
+    };
+    const remember = async (key) => {
+      if (!key || keyInfo.has(key) || !key.extractable) return;
+      try { keyInfo.set(key, { key: await exportBytes(key) }); } catch (_) {}
+    };
+    const infoOf = async (key) => { await remember(key); const i = key && keyInfo.get(key); return i ? i.key : null; };
+    // Produce a key the page asked for as non-extractable WITHOUT losing its bytes: make it extractable,
+    // read the bytes, then import those bytes back with the page's own extractable flag and usages.
+    // The page gets a key with the same algorithm/usages/extractable it requested. Any failure -> the
+    // unmodified original call, so the page is never broken by this.
+    const reimport = async (k, extractable) => {
+      const bytes = await exportBytes(k);
+      keyInfo.set(k, { key: bytes });
+      if (extractable || k.type === 'public') return k; // public keys are always extractable
+      const format = k.type === 'secret' ? 'raw' : 'pkcs8';
+      const raw = Uint8Array.from(atob(bytes.value), (c) => c.charCodeAt(0));
+      const again = await O.importKey.call(subtle, format, raw, k.algorithm, false, k.usages);
+      keyInfo.set(again, { key: bytes });
+      return again;
+    };
+    const capturing = (orig, self, args, extIdx, finish) => {
+      const forced = Array.prototype.slice.call(args);
+      const extractable = !!forced[extIdx];
+      forced[extIdx] = true;
+      return orig.apply(self, forced).then(async (out) => {
+        const result = out && out.publicKey
+          ? { publicKey: await reimport(out.publicKey, true), privateKey: await reimport(out.privateKey, extractable) }
+          : await reimport(out, extractable);
+        finish(result);
+        return result;
+      }).catch(() => orig.apply(self, args)); // e.g. an algorithm that can't be exported -> plain call
+    };
+    const keyFields = (k) => (k && k.publicKey
+      ? { publicKey: (keyInfo.get(k.publicKey) || {}).key || null, privateKey: (keyInfo.get(k.privateKey) || {}).key || null }
+      : { key: (keyInfo.get(k) || {}).key || null });
+
+    wrap(subtle, 'importKey', (orig) => function (format, keyData, algorithm) {
+      const where = site();
+      return orig.apply(this, arguments).then((key) => {
+        keyInfo.set(key, { key: keyMaterial(format, keyData) });
+        send({ lib: 'webcrypto', op: 'importKey', alg: algParams(algorithm), format, key: keyInfo.get(key).key, site: where });
         return key;
       });
     });
+    wrap(subtle, 'exportKey', (orig) => function (format, key) {
+      const where = site();
+      return orig.apply(this, arguments).then((out) => {
+        send({ lib: 'webcrypto', op: 'exportKey', format, alg: algParams(key && key.algorithm), key: keyMaterial(format, out), site: where });
+        return out;
+      });
+    });
+    // generateKey(alg, extractable, usages): per-request random keys (e.g. an RSA-wrapped AES session key).
+    wrap(subtle, 'generateKey', (orig) => function (algorithm) {
+      const where = site();
+      return capturing(orig, this, arguments, 1, (k) =>
+        send({ lib: 'webcrypto', op: 'generateKey', alg: algParams(algorithm), ...keyFields(k), site: where }));
+    });
+    // deriveKey(alg, baseKey, derivedAlg, extractable, usages): PBKDF2/HKDF/ECDH -> the cipher key.
+    wrap(subtle, 'deriveKey', (orig) => function (algorithm, baseKey, derivedAlg) {
+      const where = site();
+      return capturing(orig, this, arguments, 3, (k) =>
+        send({ lib: 'webcrypto', op: 'deriveKey', alg: algParams(algorithm), baseKey: (keyInfo.get(baseKey) || {}).key || null,
+          derivedAlg: algParams(derivedAlg), ...keyFields(k), site: where }));
+    });
+    wrap(subtle, 'deriveBits', (orig) => function (algorithm, baseKey, length) {
+      const where = site();
+      return orig.apply(this, arguments).then((out) => {
+        send({ lib: 'webcrypto', op: 'deriveBits', alg: algParams(algorithm), baseKey: (keyInfo.get(baseKey) || {}).key || null,
+          length, output: enc(out), site: where });
+        return out;
+      });
+    });
+    // wrapKey(format, key, wrappingKey, wrapAlg): the key being shipped, and its wrapped form.
+    wrap(subtle, 'wrapKey', (orig) => function (format, key, wrappingKey, wrapAlg) {
+      const where = site();
+      return orig.apply(this, arguments).then(async (out) => {
+        send({ lib: 'webcrypto', op: 'wrapKey', format, alg: algParams(wrapAlg), wrappedKey: await infoOf(key),
+          key: await infoOf(wrappingKey), output: enc(out), site: where });
+        return out;
+      });
+    });
+    // unwrapKey(format, wrapped, unwrappingKey, unwrapAlg, unwrappedAlg, extractable, usages)
+    wrap(subtle, 'unwrapKey', (orig) => function (format, wrapped, unwrappingKey, unwrapAlg, unwrappedAlg) {
+      const where = site();
+      return capturing(orig, this, arguments, 5, (k) =>
+        send({ lib: 'webcrypto', op: 'unwrapKey', format, alg: algParams(unwrapAlg), unwrappedAlg: algParams(unwrappedAlg),
+          input: enc(wrapped), unwrappingKey: (keyInfo.get(unwrappingKey) || {}).key || null, ...keyFields(k), site: where }));
+    });
     // Hashing (SubtleCrypto.digest) — integrity tokens are often built from a digest.
     wrap(subtle, 'digest', (orig) => function (algorithm, data) {
-      const p = orig.apply(this, arguments);
-      return p.then((out) => {
-        send({ lib: 'webcrypto', op: 'digest', alg: typeof algorithm === 'string' ? { name: algorithm } : algorithm, input: enc(data), output: enc(out), site: site() });
+      const where = site();
+      return orig.apply(this, arguments).then((out) => {
+        send({ lib: 'webcrypto', op: 'digest', alg: algOf(algorithm), input: enc(data), output: enc(out), site: where });
         return out;
       });
     });
     for (const op of ['encrypt', 'decrypt', 'sign', 'verify']) {
       wrap(subtle, op, (orig) => function (algorithm, key, data) {
-        const p = orig.apply(this, arguments);
-        const info = keyInfo.get(key);
-        const alg = typeof algorithm === 'string' ? { name: algorithm } : algorithm;
-        return p.then((out) => {
+        const where = site();
+        const alg = algOf(algorithm);
+        return orig.apply(this, arguments).then(async (out) => {
           send({
-            lib: 'webcrypto', op, alg,
+            lib: 'webcrypto', op, alg: algParams(alg),
             iv: alg && alg.iv ? enc(alg.iv) : null,
-            key: info ? info.key : null,
+            key: await infoOf(key), // a key we never saw created (e.g. from IndexedDB) is read now if extractable
             input: enc(data),
             output: op === 'verify' ? { encoding: 'bool', value: String(out) } : enc(out),
-            site: site(),
+            site: where,
           });
           return out;
         });

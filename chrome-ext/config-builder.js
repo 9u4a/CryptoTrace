@@ -53,6 +53,44 @@
     return spec;
   }
 
+  // WebCrypto hands plaintext over as bytes (recorded base64). The server's selftest compares text, so a
+  // plaintext that is valid UTF-8 becomes that text; anything else yields no vector. Self-contained (no
+  // atob/TextDecoder) so it runs the same in the panel and in the test sandbox.
+  const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'; // base64 alphabet, not a key  leakcheck:allow
+  function b64Bytes(s) {
+    const t = String(s).replace(/=+$/, '');
+    const out = [];
+    let acc = 0, bits = 0;
+    for (const ch of t) {
+      const v = B64.indexOf(ch);
+      if (v < 0) return null;
+      acc = (acc << 6) | v; bits += 6;
+      if (bits >= 8) { bits -= 8; out.push((acc >> bits) & 0xff); }
+    }
+    return out;
+  }
+  function utf8Text(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length;) {
+      const b = bytes[i];
+      const n = b < 0x80 ? 0 : (b & 0xe0) === 0xc0 ? 1 : (b & 0xf0) === 0xe0 ? 2 : (b & 0xf8) === 0xf0 ? 3 : -1;
+      if (n < 0 || i + n > bytes.length - 1) return null; // invalid lead byte / truncated sequence
+      let cp = n ? b & (0x3f >> n) : b;
+      for (let j = 1; j <= n; j++) { const c = bytes[i + j]; if ((c & 0xc0) !== 0x80) return null; cp = (cp << 6) | (c & 0x3f); }
+      if (b < 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0d) return null; // control bytes: not text
+      s += String.fromCodePoint(cp);
+      i += n + 1;
+    }
+    return s;
+  }
+  function asText(v) {
+    if (!v) return null;
+    if (v.encoding === 'utf8') return String(v.value);
+    if (v.encoding !== 'base64') return null;
+    const bytes = b64Bytes(v.value);
+    return bytes ? utf8Text(bytes) : null;
+  }
+
   // Guess byte-encoding of a captured key/iv string.
   function keyEntry(obj) {
     if (!obj) return null;
@@ -107,6 +145,7 @@
     // first capture at a location defines the cipher; later ones only add selftest vectors.
     const ruleByLoc = new Map(); // request "in|path|name" -> cipher id
     const ruleByLocResp = new Map(); // response "in|path|name" -> cipher id
+    const keyValOf = new Map(); // cipher id -> the key value of the capture that defined it
     const locKeyOf = (a) => (a ? `${a.in}|${a.path || ''}|${a.name || ''}` : null);
     const keyNameFor = (entry) => {
       const sig = JSON.stringify(entry);
@@ -131,15 +170,33 @@
       const locKey = locKeyOf(r.apply);
       const locKeyResp = locKeyOf(r.applyResponse);
       let id;
-      if (locKey && ruleByLoc.has(locKey)) {
-        id = ruleByLoc.get(locKey);
-      } else if (locKeyResp && ruleByLocResp.has(locKeyResp)) {
-        id = ruleByLocResp.get(locKeyResp);
+      let otherKey = false; // this capture used a different key than the one the location's cipher holds
+      if ((locKey && ruleByLoc.has(locKey)) || (locKeyResp && ruleByLocResp.has(locKeyResp))) {
+        id = locKey && ruleByLoc.has(locKey) ? ruleByLoc.get(locKey) : ruleByLocResp.get(locKeyResp);
+        const seen = keyValOf.get(id);
+        const now = r.key && r.key.value != null ? String(r.key.value) : null;
+        if (seen != null && now != null && seen !== now && cfg.ciphers[id].alg !== 'rsa') {
+          otherKey = true;
+          if (!cfg.ciphers[id]._perRequestKey) {
+            cfg.ciphers[id]._perRequestKey = true;
+            cfg.ciphers[id]._note = 'key differs between captures at this location (per-request / session key)';
+          }
+        }
       } else {
         id = 'c' + ++ci;
+        if (r.key && r.key.value != null) keyValOf.set(id, String(r.key.value));
         if (spec.alg === 'rsa') {
-          cfg.ciphers[id] = spec; // keys (public/private) must be filled in by the analyst
-          spec._note = 'RSA: add publicKey/privateKey (DER base64 or PEM) manually';
+          cfg.ciphers[id] = spec;
+          // WebCrypto hands over the key it encrypts/decrypts with (spki/pkcs8 base64, or a JWK): an encrypt
+          // capture carries the public half, a decrypt capture the private half.
+          if (r.lib === 'webcrypto' && r.key && r.key.value) {
+            const entry = r.key.encoding === 'jwk'
+              ? { source: 'static', value: String(r.key.value), encoding: 'utf8' }
+              : { source: 'static', value: String(r.key.value), encoding: 'base64' };
+            spec[r.op === 'decrypt' ? 'privateKey' : 'publicKey'] = keyNameFor(entry);
+          } else {
+            spec._note = 'RSA: add publicKey/privateKey (DER base64 or PEM) manually';
+          }
         } else {
           const passphrase = spec._passphrase;
           delete spec._passphrase;
@@ -158,11 +215,12 @@
       if (locKey && !ruleByLoc.has(locKey)) { cfg.apply.request.push(rule(r.apply)); ruleByLoc.set(locKey, id); }
       if (locKeyResp && !ruleByLocResp.has(locKeyResp)) { cfg.apply.response.push(rule(r.applyResponse)); ruleByLocResp.set(locKeyResp, id); }
       // selftest vector when we have both plaintext and ciphertext
-      if (r.op === 'encrypt' && r.input && r.output && r.input.encoding === 'utf8') {
-        cfg.selftest.push({ cipher: id, plain: r.input.value, ciphertext: r.output.value });
-      } else if (r.op === 'decrypt' && r.input && r.output && r.output.encoding === 'utf8') {
-        cfg.selftest.push({ cipher: id, plain: r.output.value, ciphertext: r.input.value });
-      }
+      if (otherKey) continue; // a vector made with another key would fail this cipher's selftest
+      // RSA encryption is randomized: a vector can only be checked by decrypting, which needs the private key.
+      if (cfg.ciphers[id].alg === 'rsa' && !cfg.ciphers[id].privateKey) continue;
+      const plain = asText(r.op === 'encrypt' ? r.input : r.output);
+      const ct = r.op === 'encrypt' ? r.output : r.input;
+      if (plain != null && ct && ct.value != null) cfg.selftest.push({ cipher: id, plain, ciphertext: ct.value });
     }
 
     // Draft integrity rules from captured hash/HMAC calls whose output landed in a request field
@@ -214,7 +272,8 @@
     const why = {};
     for (const [id, c] of Object.entries(out.ciphers)) {
       let reason = null;
-      if (c.custom) reason = 'custom module not provided';
+      if (c._perRequestKey) reason = 'key changes per request (not a fixed key)';
+      else if (c.custom) reason = 'custom module not provided';
       else if (c.alg === 'rsa' && !c.publicKey && !c.privateKey) reason = 'RSA key not captured';
       else if (c.alg !== 'rsa' && !c.key && !c.custom) reason = 'key not captured (per-request or wrapped key)';
       if (reason) { why[id] = reason; delete out.ciphers[id]; }

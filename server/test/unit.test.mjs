@@ -56,6 +56,16 @@ test('RSA-OAEP encrypts with public key; decrypt needs private key', () => {
   assert.throws(() => enc.decrypt('AAAA'), /private key/);
 });
 
+test('RSA keys given as JWK JSON (as WebCrypto importKey("jwk") captures them) work', () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const pubJwk = Buffer.from(JSON.stringify(publicKey.export({ format: 'jwk' })));
+  const privJwk = Buffer.from(JSON.stringify(privateKey.export({ format: 'jwk' })));
+  const full = rsaCipher({ padding: 'oaep', oaepHash: 'sha256' }, pubJwk, privJwk);
+  assert.equal(full.decrypt(full.encrypt('secret')), 'secret');  // a private key alone is enough: the public half is derived from it
+  const privOnly = rsaCipher({ padding: 'oaep', oaepHash: 'sha256' }, null, privJwk);
+  assert.equal(privOnly.decrypt(privOnly.encrypt('secret')), 'secret');
+});
+
 test('custom cipher runs in vm without require/process/fetch, with timeout', () => {
   const rev = loadCustomCipher(path.join(HERE, '../fixtures/reverse-cipher.js'), {}, {});
   assert.equal(rev.decrypt(rev.encrypt('abc')), 'abc');

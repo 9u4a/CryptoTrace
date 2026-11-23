@@ -154,6 +154,10 @@ export function ecdhShared(curve, privBytes, peerPubBytes) {
 function asKeyObject(bytesOrPem, kind) {
   const s = bytesOrPem.toString('utf8');
   if (s.includes('-----BEGIN')) return kind === 'public' ? crypto.createPublicKey(s) : crypto.createPrivateKey(s);
+  if (s.trimStart().startsWith('{')) { // JWK, as WebCrypto importKey("jwk") hands it over
+    const key = JSON.parse(s);
+    return kind === 'public' ? crypto.createPublicKey({ key, format: 'jwk' }) : crypto.createPrivateKey({ key, format: 'jwk' });
+  }
   return kind === 'public'
     ? crypto.createPublicKey({ key: bytesOrPem, format: 'der', type: 'spki' })
     : crypto.createPrivateKey({ key: bytesOrPem, format: 'der', type: 'pkcs8' });
@@ -168,8 +172,9 @@ export function rsaCipher(spec, publicKey, privateKey) {
   const oaepHash = spec.oaepHash || 'sha1';
   const inEnc = spec.inEncoding || 'utf8';
   const outEnc = spec.outEncoding || 'base64';
-  const pub = publicKey ? asKeyObject(publicKey, 'public') : null;
   const priv = privateKey ? asKeyObject(privateKey, 'private') : null;
+  // the public half is part of an RSA private key, so a private key alone also encrypts
+  const pub = publicKey ? asKeyObject(publicKey, 'public') : priv ? crypto.createPublicKey(priv) : null;
   return {
     deterministic: false,
     encrypt(plain) {
