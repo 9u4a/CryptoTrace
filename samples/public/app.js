@@ -164,3 +164,22 @@ $('e-go').onclick = async () => {
   const dec = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: unb64(out.iv) }, await eKeyP, unb64(out.data));
   log('POST /api/inquiry 응답 (복호화)', JSON.parse(new TextDecoder().decode(dec)));
 };
+
+// ---- F. KISA SEED-CBC behind site-specific helpers (what real Korean sites look like) ----
+// No library object with encrypt/decrypt to hook: CryptoTrace finds it by the SEED tables in the script.
+const SEED_KEY = new TextEncoder().encode('ct-seed-key-0016');
+const SEED_IV = new TextEncoder().encode('ct-seed-iv--0016');
+function encSeed(text) {
+  const m = new TextEncoder().encode(text);
+  return b64(window.KISA_SEED_CBC.SEED_CBC_Encrypt(SEED_KEY, SEED_IV, m, 0, m.length));
+}
+
+$('f-go').onclick = async () => {
+  const encData = encSeed(JSON.stringify({ oldPin: $('f-old').value, newPin: $('f-new').value }));
+  const res = await fetch('/api/card/pin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...commonHeaders() },
+    body: JSON.stringify({ cardNo: $('f-card').value, encData }),
+  });
+  log('POST /api/card/pin 응답', await res.json());
+};

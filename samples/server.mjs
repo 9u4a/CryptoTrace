@@ -12,6 +12,9 @@
 //                          `encPin`. Key from GET /api/rsakey {modulus, exponent} (hex), the usual Korean shape.
 //   E  POST /api/inquiry   WebCrypto AES-256-CBC, static key, fresh IV per request in the X-Enc-IV header (hex).
 //                          Body {payload: base64(ct), channel}; response {iv: base64, data: base64(ct)}.
+//   F  POST /api/card/pin  KISA SEED-CBC via vendored kisa-seed (no library API to hook: found by the constant
+//                          scan). JSON {cardNo, encData: base64}. GET /vendor-shim/kisa-seed.js wraps the
+//                          vendored CommonJS file for the browser (window.KISA_SEED_CBC); the file is not modified.
 //   GET  /api/accounts   plain JSON (fake demo accounts), mixed in like a real app.
 // Responses echo user input so reflected-payload detection can be tested through Burp.
 
@@ -20,7 +23,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { A_KEY, A_IV, C_KEY_HEX, C_IV_LEN, E_KEY } from './keys.mjs';
+import { createRequire } from 'node:module';
+import { A_KEY, A_IV, C_KEY_HEX, C_IV_LEN, E_KEY, F_KEY, F_IV } from './keys.mjs';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(DIR, 'public');
@@ -48,6 +52,7 @@ export function gcmDecrypt(key, iv, ctWithTag) {
   return Buffer.concat([d.update(ctWithTag.subarray(0, -16)), d.final()]).toString('utf8');
 }
 export const C_KEY = Buffer.from(C_KEY_HEX, 'hex');
+const SEED = createRequire(import.meta.url)('./public/vendor/kisa-seed-1.1.0.js').KISA_SEED_CBC;
 
 export function loadRsaKeys(dir = KEY_DIR) {
   const priv = path.join(dir, 'rsa-private.pem');
@@ -133,6 +138,18 @@ export function createSampleServer({ keyDir = KEY_DIR } = {}) {
       const c = crypto.createCipheriv('aes-256-cbc', key, riv);
       return [200, { iv: riv.toString('base64'), data: Buffer.concat([c.update(reply), c.final()]).toString('base64') }];
     },
+
+    'POST /api/card/pin': async (body) => {
+      const { encData } = JSON.parse(body);
+      const ct = Buffer.from(encData, 'base64');
+      const plain = Buffer.from(SEED.SEED_CBC_Decrypt(Buffer.from(F_KEY), Buffer.from(F_IV), ct, 0, ct.length)).toString('utf8');
+      const req = JSON.parse(plain);
+      return [200, { ok: true, code: '0000', msg: `card pin changed to ${req.newPin}`, data: { changedAt: now() } }];
+    },
+
+    'GET /vendor-shim/kisa-seed.js': async () => [200,
+      '(function () { var exports = {};\n' + fs.readFileSync(path.join(PUBLIC, 'vendor/kisa-seed-1.1.0.js'), 'utf8') +
+      '\n;window.KISA_SEED_CBC = exports.KISA_SEED_CBC; })();\n', 'text/javascript'],
 
     'GET /api/accounts': async () => [200, { code: '0000', data: accounts.map((a) => ({ ...a })) }],
 

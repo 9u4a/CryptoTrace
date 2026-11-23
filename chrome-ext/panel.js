@@ -57,6 +57,7 @@ async function loadHookSource() {
 async function installInto(target, isWorker) {
   await cdp('Runtime.enable', {}, target);
   await cdp('Runtime.addBinding', { name: BINDING }, target);
+  await enableScan(target);
   if (isWorker) {
     await cdp('Runtime.evaluate', { expression: hookSource }, target).catch((e) =>
       setStatus('worker hook eval failed: ' + e.message, true),
@@ -94,9 +95,53 @@ async function detach() {
   await new Promise((resolve) => chrome.debugger.detach(DEBUGGEE, () => { void chrome.runtime.lastError; resolve(); }));
 }
 
+/* ------------------------- constant-signature scan ------------------------- */
+// Every script the page (or a worker) parses is scanned for cipher/hash constants (signatures.json via
+// signatures.js): this finds crypto with no library API to hook -- SEED/ARIA ports, inlined or obfuscated
+// copies. Passive: reads script sources only. Our session never pauses (anti-debug `debugger;` traps).
+let signatures = null;
+const scannedScripts = new Set(); // script hash (or id): each source scanned once
+const findingKeys = new Set();
+const MAX_SCAN_BYTES = 8 * 1024 * 1024;
+let findingSeq = 0;
+
+async function enableScan(target) {
+  try {
+    if (!signatures) signatures = await (await fetch(chrome.runtime.getURL('signatures.json'))).json();
+    await cdp('Debugger.enable', {}, target);
+    await cdp('Debugger.setSkipAllPauses', { skip: true }, target);
+  } catch (e) {
+    setStatus('script scan unavailable: ' + e.message, true);
+  }
+}
+
+async function scanScript(target, p) {
+  if (!signatures || !window.CryptoTraceScan) return;
+  if (/^(chrome-extension|devtools|chrome):/.test(p.url || '') || (p.length || 0) > MAX_SCAN_BYTES) return;
+  const key = p.hash || p.scriptId;
+  if (scannedScripts.has(key)) return;
+  scannedScripts.add(key);
+  let src;
+  try { src = (await cdp('Debugger.getScriptSource', { scriptId: p.scriptId }, target)).scriptSource; } catch (_) { return; }
+  for (const f of window.CryptoTraceScan.scanSource(src, signatures)) {
+    // positions are within the script; a script embedded in HTML starts at startLine/startColumn
+    const line = f.line + (p.startLine || 0);
+    const col = f.line === 0 ? f.col + (p.startColumn || 0) : f.col;
+    const k = f.id + '|' + (p.url || p.scriptId) + '|' + line;
+    if (findingKeys.has(k)) continue;
+    findingKeys.add(k);
+    renderRow({ n: 'S' + ++findingSeq, lib: 'scan', op: 'scan', alg: { name: f.name }, scan: f,
+      site: p.url ? { url: p.url, line: line + 1, col: col + 1 } : null, scriptUrl: p.url || '(eval/inline script ' + p.scriptId + ')' });
+  }
+}
+
 /* ------------------------- events ------------------------- */
 function onEvent(source, method, params) {
   if (!attached || source.tabId !== tabId) return;
+  if (method === 'Debugger.scriptParsed') {
+    scanScript(source.sessionId ? { tabId, sessionId: source.sessionId } : DEBUGGEE, params);
+    return;
+  }
   if (method === 'Runtime.bindingCalled' && params.name === BINDING) {
     try { addRecord(JSON.parse(params.payload)); } catch (_) {}
     return;
@@ -173,13 +218,13 @@ function applyCell(rec) {
 
 function opBadge(op) {
   const b = document.createElement('span');
-  b.className = op === 'encrypt' ? 'op-encrypt' : op === 'decrypt' ? 'op-decrypt' : '';
+  b.className = op === 'encrypt' ? 'op-encrypt' : op === 'decrypt' ? 'op-decrypt' : op === 'scan' ? 'op-scan' : '';
   b.textContent = op || '';
   return b;
 }
 
 function isHidden(rec) {
-  return el('onlyCipher').checked && !CIPHER_OPS.has(rec.op);
+  return el('onlyCipher').checked && !CIPHER_OPS.has(rec.op) && rec.op !== 'scan'; // findings always shown
 }
 
 function renderRow(rec) {
@@ -257,7 +302,13 @@ function pretty(v) {
 let lastDetail = '';
 function renderDetail(rec) {
   const isPlain = (side) => (rec.op === 'encrypt' && side === 'input') || (rec.op === 'decrypt' && side === 'output');
-  const rows = [
+  const rows = rec.op === 'scan' ? [
+    ['algorithm', { value: rec.scan.algo + (rec.scan.strength === 'weak' ? ' (약한 신호)' : '') }, ''],
+    ['what', { value: rec.scan.name + (rec.scan.note ? ' - ' + rec.scan.note : '') }, ''],
+    ['code', { value: rec.scan.snippet }, ''],
+    ['script', { value: rec.scriptUrl + (rec.site ? ':' + rec.site.line + ':' + rec.site.col : '') }, ''],
+    ['next', { value: '이 위치 주변 함수가 암호화 지점 후보입니다. Sources에서 열어 호출 흐름을 확인하세요.' }, ''],
+  ] : [
     ['key', rec.key, ''],
     ['iv', rec.iv, ''],
     [rec.op === 'decrypt' ? 'input (암호문)' : rec.op === 'encrypt' ? 'input (평문)' : 'input', rec.input, isPlain('input') ? 'plain' : ''],

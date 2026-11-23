@@ -11,3 +11,7 @@ export const C_IV_LEN = 12;
 
 // Scenario E — WebCrypto AES-256-CBC, static raw key (utf8 bytes), fresh IV per request sent in a header
 export const E_KEY = 'ct-sample-e-key-for-inquiry-0001'; // 32 bytes
+
+// Scenario F — KISA SEED-CBC (16-byte key/IV, utf8), called through site-specific function names
+export const F_KEY = 'ct-seed-key-0016'; // 16 bytes
+export const F_IV = 'ct-seed-iv--0016'; // 16 bytes

@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { createSampleServer, aesCbcEncrypt, aesCbcDecrypt, gcmEncrypt, gcmDecrypt, C_KEY } from '../server.mjs';
-import { E_KEY } from '../keys.mjs';
+import { E_KEY, F_KEY, F_IV } from '../keys.mjs';
+import { createRequire } from 'node:module';
 
 let server, base, keyDir;
 
@@ -91,6 +92,17 @@ test('E: AES-256-CBC static key, fresh IV per request in the X-Enc-IV header (he
   const bad = await fetch(base + '/api/inquiry', { method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Enc-IV': crypto.randomBytes(16).toString('hex') }, body: JSON.stringify({ payload }) });
   assert.equal(bad.status, 400, 'wrong IV -> the target rejects it');
+});
+
+test('F: KISA SEED-CBC (no hookable library API) in a JSON field; shim serves the vendored CommonJS file to the browser', async () => {
+  const { KISA_SEED_CBC: S } = createRequire(import.meta.url)('../public/vendor/kisa-seed-1.1.0.js');
+  const enc = (s) => Buffer.from(S.SEED_CBC_Encrypt(Buffer.from(F_KEY), Buffer.from(F_IV), new TextEncoder().encode(s), 0, Buffer.byteLength(s))).toString('base64');
+  const res = await post('/api/card/pin', JSON.stringify({ cardNo: '9410-****-****-1234', encData: enc(JSON.stringify({ oldPin: '1234', newPin: '5678<x>' })) }));
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).msg, 'card pin changed to 5678<x>');
+  const shim = await (await fetch(base + '/vendor-shim/kisa-seed.js')).text();
+  assert.match(shim, /window\.KISA_SEED_CBC = exports\.KISA_SEED_CBC/);
+  assert.ok(shim.includes('0x2989a1a8') || shim.includes('696885672'), 'the real SEED tables are served');
 });
 
 test('static files served, traversal blocked', async () => {
