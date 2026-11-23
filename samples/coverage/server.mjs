@@ -39,8 +39,26 @@ function page(c) {
   const libs = (c.libs || []).map((s) => `<script src="${s}"></script>`).join('\n');
   const client = `(function ${c.client.toString()})();`;
   const main = c.module ? `<script type="module">\n${c.prelude || ''}\n${client}\nwindow.__ready = true;\n</script>` : `<script>\n${client}\nwindow.__ready = true;\n</script>`;
-  return `<!doctype html><html><head><meta charset="utf-8"><title>cov ${c.id}</title></head><body>
+  // Manual use: an input + button that calls the case's __run, then shows what the target decrypted.
+  // (The runner calls window.__run directly; the button only adds a GET of /cov/<id>/last.)
+  const ui = `<p><input id="plain" size="50" value='{"t":"manual-test"}'> <button id="go">실행</button>
+<a href="/cov">← 목록</a></p><p>기대 수준: <b>${c.expect}</b>${c.note ? ' — ' + c.note : ''}</p>
+<pre id="out" style="background:#f4f4f4;padding:8px;white-space:pre-wrap"></pre>
+<script>
+document.getElementById('go').onclick = async () => {
+  const out = document.getElementById('out');
+  out.textContent = '전송 중...';
+  try {
+    await window.__run(document.getElementById('plain').value);
+    const last = await (await fetch('/cov/${c.id}/last')).json();
+    out.textContent = '대상 서버가 받은 요청: ' + (last.accepted ? '복호화 성공' : '거부 (' + last.error + ')') + '\\n평문: ' + (last.plain || '') +
+      '\\n\\n원문 요청: ' + last.method + ' ' + last.path + '\\n' + last.headers.filter(([k]) => /^(content-type|cookie|x-)/i.test(k)).map(([k, v]) => k + ': ' + v).join('\\n') + '\\n\\n' + last.body;
+  } catch (e) { out.textContent = '오류: ' + e.message; }
+};
+</script>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>cov ${c.id}</title></head><body style="font-family:sans-serif">
 <h1>${c.id}</h1><p>${c.title}</p>
+${ui}
 ${libs}
 ${main}
 </body></html>`;
@@ -73,7 +91,12 @@ export function createCoverageServer() {
       const url = new URL(req.url, 'http://x');
       const p = url.pathname;
       try {
-        if (p === '/cov' || p === '/cov/') return send(res, 200, `<ul>${CASES.map((c) => `<li><a href="/cov/${c.id}">${c.id}</a> ${c.title}</li>`).join('')}</ul>`, 'text/html');
+        if (p === '/cov' || p === '/cov/') {
+          const rows = CASES.map((c) => `<tr><td><a href="/cov/${c.id}">${c.id}</a></td><td>${c.group}</td><td><b>${c.expect}</b></td><td>${c.title}</td></tr>`).join('');
+          return send(res, 200, `<!doctype html><meta charset="utf-8"><title>CryptoTrace coverage lab</title><body style="font-family:sans-serif">
+<h1>CryptoTrace coverage lab</h1><p>케이스를 열고 DevTools CryptoTrace 패널에서 Hook ON → 실행. 기대 수준: auto &gt; trace &gt; encrypt-only &gt; skip &gt; locate &gt; none</p>
+<table border="1" cellpadding="4" style="border-collapse:collapse"><tr><th>case</th><th>group</th><th>expect</th><th>what</th></tr>${rows}</table></body>`, 'text/html');
+        }
         if (p === '/cov/key') return send(res, 200, key);
         if (p === '/cov/agent') { // a stand-in for a native security agent: encrypts outside the page
           const c = crypto.createCipheriv('aes-128-cbc', Buffer.from('cov-agent-key-16'), Buffer.from('cov-agent-iv--16'));
