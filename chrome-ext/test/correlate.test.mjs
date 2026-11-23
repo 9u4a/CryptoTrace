@@ -89,3 +89,27 @@ test('a ciphertext sent over a WebSocket -> applyWebSocket (never an HTTP apply 
   assert.equal(rec.apply, undefined);
   assert.deepEqual({ ...rec.applyWebSocket }, { in: 'json', path: '$.payload', at: '/stream', url: 'wss://api.test/stream' });
 });
+
+test('isExplained: a traced value is explained only by a captured call placed at the same location and endpoint', () => {
+  const sandbox = { window: {}, URL };
+  vm.runInNewContext(fs.readFileSync(path.join(HERE, '../correlate.js'), 'utf8'), sandbox);
+  const { correlate, isExplained } = sandbox.window;
+  const rec = enc('QUJDREVGR0hJSktMTU5PUA==');
+  const records = [rec];
+  correlate({ lib: 'transport', op: 'fetch', url: '/api/a', body: { kind: 'json', fields: [{ path: '$.enc', value: 'QUJDREVGR0hJSktMTU5PUA==' }] } }, records);
+  assert.equal(isExplained({ url: '/api/a', loc: { in: 'json', path: '$.enc' } }, records), true);
+  assert.equal(isExplained({ url: '/api/a', loc: { in: 'json', path: '$.other' } }, records), false, 'another field');
+  assert.equal(isExplained({ url: '/api/b', loc: { in: 'json', path: '$.enc' } }, records), false, 'another endpoint');
+});
+
+test('isExplained: the IV field of a captured call (ivApply) is explained too', () => {
+  const sandbox = { window: {}, URL };
+  vm.runInNewContext(fs.readFileSync(path.join(HERE, '../correlate.js'), 'utf8'), sandbox);
+  const { correlate, isExplained } = sandbox.window;
+  const rec = wc(IV16, CT);
+  const records = [rec];
+  correlate({ lib: 'transport', op: 'fetch', url: '/api/inquiry', headers: [['X-Enc-IV', IV16.toString('hex')]],
+    body: { kind: 'json', fields: [{ path: '$.payload', value: B(CT) }] } }, records);
+  assert.equal(isExplained({ url: '/api/inquiry', loc: { in: 'header', name: 'X-Enc-IV' } }, records), true);
+  assert.equal(isExplained({ url: '/api/other', loc: { in: 'header', name: 'X-Enc-IV' } }, records), false);
+});

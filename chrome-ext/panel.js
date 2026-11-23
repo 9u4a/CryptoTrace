@@ -180,7 +180,23 @@ chrome.debugger.onDetach.addListener(onDetach);
 window.addEventListener('unload', () => { if (attached) chrome.debugger.detach(DEBUGGEE, () => void chrome.runtime.lastError); });
 
 /* ------------------------- records + correlation ------------------------- */
+// An `origin` record (hook-transport.js): a sent value that looks like ciphertext, traced to the encoding call
+// that produced it. Shown as an "unknown" row only when no captured crypto call already explains that
+// location (correlate.js ran on the transport record just before), once per location.
+const originKeys = new Set();
+function addOrigin(o) {
+  if (window.isExplained(o, records)) return; // a hooked call explains it (correlate.js)
+  const at = (() => { try { return new URL(o.url, 'http://x').pathname; } catch (_) { return ''; } })();
+  const key = o.loc.in + '|' + (o.loc.path || o.loc.name || '') + '|' + at;
+  if (originKeys.has(key)) return;
+  originKeys.add(key);
+  const top = o.frames[0];
+  renderRow({ n: 'U' + originKeys.size, lib: 'origin', op: 'unknown', alg: { name: o.sink + ' → ' + applyText(o.loc) }, origin: o,
+    apply: null, site: top ? { url: top.url, line: top.line, col: top.col } : null });
+}
+
 function addRecord(rec) {
+  if (rec.lib === 'origin') return addOrigin(rec);
   rec.n = records.length + 1;
   if (rec.lib === 'transport') window.correlate(rec, records); // correlate.js
   records.push(rec);
@@ -218,13 +234,13 @@ function applyCell(rec) {
 
 function opBadge(op) {
   const b = document.createElement('span');
-  b.className = op === 'encrypt' ? 'op-encrypt' : op === 'decrypt' ? 'op-decrypt' : op === 'scan' ? 'op-scan' : '';
+  b.className = op === 'encrypt' ? 'op-encrypt' : op === 'decrypt' ? 'op-decrypt' : op === 'scan' ? 'op-scan' : op === 'unknown' ? 'op-unknown' : '';
   b.textContent = op || '';
   return b;
 }
 
 function isHidden(rec) {
-  return el('onlyCipher').checked && !CIPHER_OPS.has(rec.op) && rec.op !== 'scan'; // findings always shown
+  return el('onlyCipher').checked && !CIPHER_OPS.has(rec.op) && rec.op !== 'scan' && rec.op !== 'unknown'; // findings always shown
 }
 
 function renderRow(rec) {
@@ -308,6 +324,12 @@ function renderDetail(rec) {
     ['code', { value: rec.scan.snippet }, ''],
     ['script', { value: rec.scriptUrl + (rec.site ? ':' + rec.site.line + ':' + rec.site.col : '') }, ''],
     ['next', { value: '이 위치 주변 함수가 암호화 지점 후보입니다. Sources에서 열어 호출 흐름을 확인하세요.' }, ''],
+  ] : rec.op === 'unknown' ? [
+    ['value', { value: rec.origin.value }, ''],
+    ['sent in', { value: applyText(rec.origin.loc) + '   @ ' + rec.origin.url + '  (' + rec.origin.via + ')' }, ''],
+    ['made by', { value: rec.origin.sink + '()  ← 아래 함수들이 이 값을 만들었습니다 (위가 가장 안쪽)' }, ''],
+    ['call stack', { value: rec.origin.frames.map((f) => f.fn + '   ' + f.url + ':' + f.line + ':' + f.col).join('\n') || '—' }, ''],
+    ['next', { value: '알려진 라이브러리 호출로 설명되지 않는 암호문입니다. 스택의 사이트 함수(예: 직접 만든 encrypt)를 Sources에서 열어 알고리즘·키를 확인하세요.' }, ''],
   ] : [
     ['key', rec.key, ''],
     ['iv', rec.iv, ''],

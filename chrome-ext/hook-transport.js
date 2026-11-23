@@ -68,6 +68,34 @@
     } catch (_) { return []; }
   };
 
+  // ---- outgoing data -> origin of values that look like ciphertext ----------
+  // Every value a request carries that looks like ciphertext (16+ base64/hex chars, varied) is looked up in
+  // hook.js's encoding-sink buffer; a hit is reported as an `origin` record with the page call stack that
+  // built it. The panel shows it only when no captured crypto call already explains that location.
+  const looksCipher = (v) => typeof v === 'string' && v.length >= 16 && /^[A-Za-z0-9+/=_%-]+$/.test(v) && new Set(v).size >= 8;
+  const slotsOf = (rec) => {
+    const out = [];
+    const b = rec.body || {};
+    if (b.kind === 'json') for (const f of b.fields || []) out.push([{ in: 'json', path: f.path }, f.value]);
+    else if (b.kind === 'form' || b.kind === 'multipart') for (const f of b.fields || []) out.push([{ in: b.kind, name: f.name }, f.value]);
+    else if (b.kind === 'text' && b.sample) out.push([{ in: 'body' }, b.sample]);
+    for (const [name, value] of rec.headers || []) out.push([{ in: 'header', name }, value]);
+    for (const [name, value] of rec.query || []) out.push([{ in: 'query', name }, value]);
+    return out;
+  };
+  const sent = (rec) => {
+    send(rec);
+    try {
+      const lookup = globalThis.__ct_sinkLookup;
+      if (typeof lookup !== 'function') return;
+      for (const [loc, value] of slotsOf(rec)) {
+        if (!looksCipher(value)) continue;
+        const hit = lookup(value);
+        if (hit) send({ lib: 'origin', op: 'origin', via: rec.op, url: rec.url, loc, value: value.slice(0, 120), sink: hit.sink, frames: hit.frames });
+      }
+    } catch (_) { /* observation only */ }
+  };
+
   // ---- fetch -------------------------------------------------------------
   if (typeof globalThis.fetch === 'function') {
     const orig = globalThis.fetch;
@@ -78,7 +106,7 @@
         const isRequest = typeof Request === 'function' && input instanceof Request;
         const headers = parseHeaders((init && init.headers) || (isRequest ? input.headers : null));
         const ctype = (headers.find(([k]) => /^content-type$/i.test(k)) || [])[1];
-        const record = (body) => send({ lib: 'transport', op: 'fetch', url, method, query: queryOf(url), headers, body });
+        const record = (body) => sent({ lib: 'transport', op: 'fetch', url, method, query: queryOf(url), headers, body });
         if (isRequest && !(init && 'body' in init) && input.body) {
           // fetch(new Request(url, {body})): the body is a stream -- read a clone (before fetch consumes it)
           input.clone().text().then((text) => record(describeBody(text, ctype)), () => record(describeBody(null)));
@@ -101,7 +129,7 @@
     const owner = Object.prototype.hasOwnProperty.call(nav, 'sendBeacon') ? nav : Object.getPrototypeOf(nav);
     const orig = owner.sendBeacon;
     owner.sendBeacon = function (url, data) {
-      try { send({ lib: 'transport', op: 'beacon', url: String(url), method: 'POST', query: queryOf(url), headers: [], body: describeBody(data) }); } catch (_) {}
+      try { sent({ lib: 'transport', op: 'beacon', url: String(url), method: 'POST', query: queryOf(url), headers: [], body: describeBody(data) }); } catch (_) {}
       return orig.apply(this, arguments);
     };
   }
@@ -111,7 +139,7 @@
   if (WS && WS.prototype && typeof WS.prototype.send === 'function') {
     const orig = WS.prototype.send;
     WS.prototype.send = function (data) {
-      try { send({ lib: 'transport', op: 'websocket', url: String(this.url || ''), headers: [], body: describeBody(data) }); } catch (_) {}
+      try { sent({ lib: 'transport', op: 'websocket', url: String(this.url || ''), headers: [], body: describeBody(data) }); } catch (_) {}
       return orig.apply(this, arguments);
     };
   }
@@ -134,7 +162,7 @@
       try {
         const c = this.__ct || {};
         const ctype = ((c.headers || []).find(([k]) => /^content-type$/i.test(k)) || [])[1];
-        send({ lib: 'transport', op: 'xhr', url: c.url, method: c.method, query: queryOf(c.url),
+        sent({ lib: 'transport', op: 'xhr', url: c.url, method: c.method, query: queryOf(c.url),
           headers: c.headers || [], body: describeBody(body, ctype) });
         this.addEventListener('load', function () {
           try {

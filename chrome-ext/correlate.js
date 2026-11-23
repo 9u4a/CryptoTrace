@@ -137,5 +137,17 @@
     place(t, outs, 'output', 'apply');
   }
 
+  // Does a captured crypto call already account for this traced value (same location, same endpoint)?
+  // `origin` = hook-transport.js origin record {url, loc}. Unexplained ones are the "unknown" rows.
+  function isExplained(origin, records) {
+    const at = pathOf(origin.url);
+    const l = origin.loc || {};
+    const same = (a) => !!a && a.in === l.in && (a.path || '') === (l.path || '') && (a.name || '') === (l.name || '') && a.at === at;
+    // ...including the field a captured call sends its IV in (a random IV looks like ciphertext, too)
+    const ivAt = (r) => (r.ivApply ? { ...r.ivApply, at: (r.apply || r.applyResponse || {}).at } : null);
+    return records.some((r) => same(r.apply) || same(r.applyWebSocket) || same(ivAt(r)));
+  }
+
   window.correlate = correlate;
+  window.isExplained = isExplained;
 })();

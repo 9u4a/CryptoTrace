@@ -619,5 +619,61 @@
     }
   });
 
+  // ---- encoding sinks: where an unexplained ciphertext became text --------
+  // Crypto with no hookable API (hand-written XOR/SEED ports, obfuscated code) still has to turn its bytes
+  // into text before sending: btoa, or a hex/base64 builder ending in Array#join. Those calls keep their
+  // recent base64/hex-looking results with the call stack; hook-transport.js looks a sent field up here
+  // (__ct_sinkLookup) and reports the page functions that produced it. The stack is captured only for
+  // results that look like base64/hex (16+ chars), so ordinary join() calls stay cheap.
+  const SINK_MAX = 300;
+  const sinks = [];
+  const CAND = /^[A-Za-z0-9+/=_-]{16,}$/;
+  let inSink = false;
+  const FRAME_RE = /^\s*at (?:(.+?) \()?((?:https?|file|blob):[^\s)]+?):(\d+):(\d+)\)?\s*$/;
+  const framesOf = (stack) => {
+    const out = [];
+    for (const line of String(stack || '').split('\n')) {
+      const m = line.match(FRAME_RE); // frames without a URL (this injected hook) are dropped
+      if (m) out.push({ fn: m[1] || '(anonymous)', url: m[2], line: Number(m[3]), col: Number(m[4]) });
+      if (out.length >= 12) break;
+    }
+    return out;
+  };
+  const noteSink = (sink, v) => {
+    if (inSink || typeof v !== 'string' || v.length < 16 || v.length > 65536 || !CAND.test(v)) return;
+    inSink = true;
+    try {
+      const limit = Error.stackTraceLimit;
+      Error.stackTraceLimit = 25;
+      const stack = new Error().stack;
+      Error.stackTraceLimit = limit;
+      sinks.push({ v, sink, stack });
+      if (sinks.length > SINK_MAX) sinks.shift();
+    } catch (_) { /* never break the page */ } finally { inSink = false; }
+  };
+  wrap(globalThis, 'btoa', (orig) => function btoa() {
+    const r = orig.apply(this, arguments);
+    noteSink('btoa', r);
+    return r;
+  });
+  wrap(Array.prototype, 'join', (orig) => function join() {
+    const r = orig.apply(this, arguments);
+    if (!inSink && typeof r === 'string' && r.length >= 16) noteSink('join', r);
+    return r;
+  });
+  try {
+    Object.defineProperty(globalThis, '__ct_sinkLookup', {
+      enumerable: false,
+      value: (val) => {
+        if (typeof val !== 'string' || val.length < 16) return null;
+        for (let i = sinks.length - 1; i >= 0; i--) {
+          const e = sinks[i];
+          if (e.v === val || (val.length > e.v.length && val.includes(e.v))) return { sink: e.sink, frames: framesOf(e.stack) };
+        }
+        return null;
+      },
+    });
+  } catch (_) { /* already defined */ }
+
   globalThis.__cryptotrace_ready = true;
 })();
