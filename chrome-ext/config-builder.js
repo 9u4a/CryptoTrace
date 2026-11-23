@@ -195,6 +195,8 @@
   function tracedSpec(r) {
     const i = r.input, o = r.output;
     if (!i || !o || o.value == null || i.value === o.value) return null; // an encoding step (bytes -> base64), not a cipher
+    if (!r.apply && !r.applyResponse) return null; // its result never reached a request: nothing to configure
+    if (o.encoding !== 'utf8' && o.encoding !== 'base64') return null; // e.g. a JSON object / Promise: not ciphertext
     const ct = String(o.value);
     const outEncoding = /^[0-9a-fA-F]+$/.test(ct) && ct.length % 2 === 0 ? 'hex'
       : /[-_]/.test(ct) && !/[+/]/.test(ct) ? 'base64url' : 'base64';
@@ -421,6 +423,44 @@
     // (a token/signature). The analyst must set the "input" template to match the page; the captured
     // one-shot input is recorded in _note as a starting point.
     const normAlg = (a) => String((a && a.name) || 'SHA256').toLowerCase().replace(/^sha-?/, 'sha');
+    // The input template: find the request that carried this signature, then the value(s) in it whose text
+    // equals what was signed -- one field, or 2-3 joined by a separator. The server recomputes the token over
+    // the FINAL (re-encrypted) message, so a field that is itself encrypted is signed with its new ciphertext.
+    const tokenOf = (loc) => (loc.in === 'json' ? `{json:${loc.path}}` : loc.in === 'body' ? '{body}' : `{${loc.in}:${loc.name}}`);
+    const slotsOfT = (t) => {
+      const out = [];
+      const b = t.body || {};
+      if (b.kind === 'json') for (const f of b.fields || []) out.push({ tok: tokenOf({ in: 'json', path: f.path }), value: f.value });
+      else if (b.kind === 'form' || b.kind === 'multipart') for (const f of b.fields || []) out.push({ tok: tokenOf({ in: b.kind, name: f.name }), value: f.value });
+      else if (b.kind === 'text' && b.sample) out.push({ tok: '{body}', value: b.sample });
+      for (const [name, value] of t.headers || []) out.push({ tok: tokenOf({ in: 'header', name }), value });
+      for (const [name, value] of t.query || []) out.push({ tok: tokenOf({ in: 'query', name }), value });
+      return out;
+    };
+    function inferTemplate(r) {
+      const input = String((r.input && r.input.value) || '');
+      const sig = String((r.output && r.output.value) || '');
+      if (!input || !sig) return null;
+      for (const t of records) {
+        if (t.lib !== 'transport' || t.op === 'response') continue;
+        const slots = slotsOfT(t);
+        if (!slots.some((s) => s.value === sig)) continue;
+        const cand = slots.filter((s) => s.value && s.value !== sig);
+        const one = cand.find((s) => s.value === input);
+        if (one) return one.tok;
+        for (const sep of ['', '|', '&', ':', '.', ',', '_', '\n']) {
+          for (const a of cand) {
+            if (!input.startsWith(a.value + sep)) continue;
+            for (const b of cand) {
+              if (b === a) continue;
+              if (a.value + sep + b.value === input) return a.tok + sep + b.tok;
+              for (const c of cand) if (c !== a && c !== b && a.value + sep + b.value + sep + c.value === input) return a.tok + sep + b.tok + sep + c.tok;
+            }
+          }
+        }
+      }
+      return null;
+    }
     for (const r of records) {
       if ((r.op !== 'hash' && r.op !== 'hmac') || !r.apply) continue;
       const target = r.apply.in === 'json' ? { in: 'json', path: r.apply.path }
@@ -433,7 +473,13 @@
         const v = String(r.key.value);
         rule.key = keyNameFor({ source: 'static', value: v, encoding: /^[0-9a-fA-F]+$/.test(v) && v.length % 2 === 0 ? 'hex' : 'utf8' });
       }
-      rule._note = 'DRAFT: set "input" to the real template. Captured input was: ' + JSON.stringify(String((r.input && r.input.value) || '').slice(0, 120));
+      const tpl = inferTemplate(r);
+      if (tpl) {
+        rule.input = tpl;
+        rule._note = 'input inferred from the captured call (signed value found in the same request)';
+      } else {
+        rule._note = 'DRAFT: set "input" to the real template. Captured input was: ' + JSON.stringify(String((r.input && r.input.value) || '').slice(0, 120));
+      }
       cfg.integrity.push(rule);
     }
 

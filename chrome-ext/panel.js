@@ -394,7 +394,7 @@ function renderDetail(rec) {
     btn.onclick = async () => {
       btn.disabled = true;
       try {
-        const armed = await tracer.traceFrames(DEBUGGEE, rec.origin.frames.slice(0, 4));
+        const armed = await tracer.traceFrames(DEBUGGEE, tracer.pickFrames(rec.origin.frames));
         rec.traceArmed = true;
         lastDetail = '';
         renderDetail(rec);

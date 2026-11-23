@@ -582,3 +582,29 @@ test('node-forge records (base64 bytes) -> cipher from the forge algorithm name;
   assert.equal(res.error, undefined, res.error);
   assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }]);
 });
+
+test('a traced function whose result was not seen in any request (or is not ciphertext-like) makes no cipher', () => {
+  const buildConfig = loadBuilder();
+  const cand = [{ name: 'K', scope: 'script', value: { encoding: 'utf8', value: 'k'.repeat(16) } }];
+  const cfg = buildConfig([
+    { lib: 'traced', op: 'call', fn: 'window.__run', input: { encoding: 'utf8', value: '{"t":1}' }, output: { encoding: 'json', value: '{}' }, candidates: cand, frame: 'https://a.test/' },
+    { lib: 'traced', op: 'call', fn: 'helper', input: { encoding: 'utf8', value: 'abc' }, output: { encoding: 'utf8', value: 'QUJDREVGR0hJSktMTU5PUA==' }, candidates: cand, frame: 'https://a.test/' },
+  ]);
+  assert.deepEqual(Object.keys(cfg.ciphers), []);
+});
+
+test('HMAC input template is inferred from the request that carried the signature', () => {
+  const buildConfig = loadBuilder();
+  const ct = 'U2FsdGVkX19hYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5'; // made-up ciphertext  leakcheck:allow
+  const sig = crypto.createHmac('sha256', 'cov-hmac-secret').update(ct).digest('hex');
+  const ts = '1732300000000';
+  const sig2 = crypto.createHmac('sha256', 'cov-hmac-secret').update(ct + '|' + ts).digest('hex');
+  const hmac = (input, out, name) => ({ lib: 'cryptojs', op: 'hmac', alg: { name: 'SHA256' }, key: { encoding: 'cryptojs', value: 'cov-hmac-secret' },
+    input: { encoding: 'utf8', value: input }, output: { encoding: 'hex', value: out }, apply: { in: 'header', name, at: '/api' } });
+  const transport = { lib: 'transport', op: 'fetch', url: '/api', headers: [['X-Sign', sig], ['X-Sign2', sig2], ['X-Ts', ts]],
+    body: { kind: 'json', fields: [{ path: '$.data', value: ct }] } };
+  const cfg = buildConfig([hmac(ct, sig, 'X-Sign'), hmac(ct + '|' + ts, sig2, 'X-Sign2'), transport]);
+  assert.equal(cfg.integrity[0].input, '{json:$.data}');
+  assert.equal(cfg.integrity[1].input, '{json:$.data}|{header:X-Ts}');
+  assert.doesNotMatch(cfg.integrity[0]._note, /DRAFT/);
+});

@@ -49,27 +49,45 @@
       return out;
     }
 
-    // Byte-sized values in the function's scopes: where a hard-coded key / IV usually lives.
+    // A plain object that is a key in disguise: a CryptoJS WordArray of a key/IV size -> its bytes, else null.
+    const WORDARRAY_FN = 'function () { var w = this; return w && typeof w.sigBytes === "number" && Array.isArray(w.words) && '
+      + '[8, 12, 16, 24, 32].indexOf(w.sigBytes) >= 0 && globalThis.__ct_ser ? globalThis.__ct_ser(w) : null; }';
+    async function wordArrayOf(t, v) {
+      try {
+        const r = await cdp('Runtime.callFunctionOn', { objectId: v.objectId, functionDeclaration: WORDARRAY_FN, returnByValue: true, silent: true }, t);
+        return r.result ? r.result.value : null;
+      } catch (_) { return null; }
+    }
+
+    // Byte-sized values reachable from the function: its scopes (closure/script/module/local) and `this`
+    // (a key kept on a service object). Strings, byte arrays and CryptoJS WordArrays of key/IV sizes.
     async function candidatesOf(t, cf) {
       const out = [];
-      for (const scope of cf.scopeChain || []) {
-        if (!SCOPES.has(scope.type) || !scope.object || !scope.object.objectId) continue;
+      const holders = (cf.scopeChain || []).filter((s) => SCOPES.has(s.type) && s.object && s.object.objectId)
+        .map((s) => ({ label: s.type, objectId: s.object.objectId }));
+      if (cf.this && cf.this.objectId && cf.this.type === 'object' && cf.this.className !== 'Window') holders.push({ label: 'this', objectId: cf.this.objectId });
+      for (const h of holders) {
         let props = [];
-        try { props = (await cdp('Runtime.getProperties', { objectId: scope.object.objectId, ownProperties: true }, t)).result || []; } catch (_) {}
+        try { props = (await cdp('Runtime.getProperties', { objectId: h.objectId, ownProperties: true }, t)).result || []; } catch (_) {}
+        let objects = 0;
         for (const p of props.slice(0, 200)) {
           const v = p.value;
           if (!v) continue;
-          const isStr = v.type === 'string' && KEY_LENGTHS.has(v.value.length);
+          let value = null;
           const m = (v.description || '').match(/^(?:Uint8Array|ArrayBuffer|Int8Array)\((\d+)\)$/);
-          const isBytes = (v.subtype === 'typedarray' || v.subtype === 'arraybuffer') && m && KEY_LENGTHS.has(Number(m[1]));
-          if (!isStr && !isBytes) continue;
-          const value = await serRemote(t, v);
-          if (value) out.push({ name: p.name, scope: scope.type, value });
+          if (v.type === 'string' && KEY_LENGTHS.has(v.value.length)) value = await serRemote(t, v);
+          else if ((v.subtype === 'typedarray' || v.subtype === 'arraybuffer') && m && KEY_LENGTHS.has(Number(m[1]))) value = await serRemote(t, v);
+          else if (v.type === 'object' && !v.subtype && v.objectId && objects++ < 40) value = await wordArrayOf(t, v);
+          if (value) out.push({ name: p.name, scope: h.label, value });
           if (out.length >= maxCandidates) return out;
         }
       }
       return out;
     }
+    const mergeCandidates = (a, b) => {
+      const seen = new Set(a.map((c) => c.value.encoding + ':' + c.value.value));
+      return a.concat(b.filter((c) => !seen.has(c.value.encoding + ':' + c.value.value)));
+    };
 
     // First hit inside a function: learn its range, break at its entry and every return point.
     async function arm(t, s, cf, bp, id) {
@@ -115,6 +133,11 @@
       if (!fn) return;
       const call = fn.stack.pop() || { args: null };
       const ret = await serRemote(t, cf.returnValue);
+      // once per function: values the function computed itself (a key built per call) exist only now
+      if (!fn.returnScanned) {
+        fn.returnScanned = true;
+        fn.candidates = mergeCandidates(fn.candidates || [], await candidatesOf(t, cf));
+      }
       const args = call.args || [];
       const input = args.find((a) => a && (a.encoding === 'utf8' || a.encoding === 'base64')) || null;
       emit({ lib: 'traced', op: 'call', fn: fn.name, alg: { name: fn.name + '()' }, args, input, output: ret,
@@ -124,6 +147,20 @@
     const ORDER = { callsite: 0, entry: 1, return: 2 };
 
     return {
+      /** Which frames of an unknown value's stack to trace: the innermost few, one per location. Library
+       * internals (an encoder, a formatter) usually come first, so take enough to reach the site's function. */
+      pickFrames(frames, max = 6) {
+        const seen = new Set();
+        const out = [];
+        for (const f of frames || []) {
+          const k = f && f.url + ':' + f.line + ':' + f.col;
+          if (!f || !f.url || seen.has(k)) continue;
+          seen.add(k);
+          out.push(f);
+          if (out.length >= max) break;
+        }
+        return out;
+      },
       /** Start tracing the functions that contain these call-site frames ({fn, url, line, col}, 1-based). */
       async traceFrames(t, frames) {
         const s = stateOf(t);

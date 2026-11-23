@@ -227,3 +227,36 @@ test('JSEncrypt: the key set with setPublicKey(PEM) is captured (as n/e) with ea
   assert.equal(BigInt('0x' + JSON.parse(r.key.value).n), BigInt('0x' + Buffer.from(jwk.n, 'base64url').toString('hex')));
   assert.equal(r.output.encoding, 'base64');
 });
+
+// webpack 5's real JSONP runtime: queued chunks are read (forEach) BEFORE push is replaced, and the
+// original push is saved with push.bind(array).
+const wpRuntime = (name) => `(() => {
+  var mods = {}, cache = {};
+  function req(id) { if (cache[id]) return cache[id].exports; var m = cache[id] = { exports: {} }; mods[id].call(m.exports, m, m.exports, req); return m.exports; }
+  var cb = (parent, data) => { var more = data[1]; for (var id in more) mods[id] = more[id]; if (parent) parent(data); };
+  var g = self[${JSON.stringify(name)}] = self[${JSON.stringify(name)}] || [];
+  g.forEach(cb.bind(null, 0));
+  g.push = cb.bind(null, g.push.bind(g));
+  self.__req_${name} = req;
+})();`;
+const wpChunk = (name) => `(self[${JSON.stringify(name)}] = self[${JSON.stringify(name)}] || []).push([[7], { 101: function (module, exports) {
+  module.exports = { AES: { encrypt: function () { return 'ct'; }, decrypt: function () { return 'pt'; } }, enc: {}, lib: {} };
+} }]);`;
+
+test('webpack 5: a vendor chunk loaded BEFORE the runtime is hooked (factories wrapped at push time)', () => {
+  globalThis.self = globalThis;
+  vm.runInThisContext(wpChunk('webpackChunkvendor_first'));
+  vm.runInThisContext(wpRuntime('webpackChunkvendor_first'));
+  const lib = globalThis.__req_webpackChunkvendor_first(101);
+  assert.ok(lib.__ct_wrapped, 'library inside the vendor chunk was detected and wrapped');
+});
+
+test('webpack 5: a chunk loaded AFTER the runtime is hooked (push.bind catches the chunk array at once)', () => {
+  globalThis.self = globalThis;
+  vm.runInThisContext(wpRuntime('webpackChunklazy_after'));
+  vm.runInThisContext(wpChunk('webpackChunklazy_after'));
+  const lib = globalThis.__req_webpackChunklazy_after(101);
+  assert.ok(lib.__ct_wrapped, 'library inside the lazy chunk was detected and wrapped');
+  assert.deepEqual([1, 2].concat([3]), [1, 2, 3]);
+  const a = []; a.push(1, 2); assert.deepEqual(a, [1, 2], 'ordinary push untouched');
+});

@@ -605,14 +605,44 @@
     } catch (_) {}
   };
   trapWebpackJsonp();
-  // webpack 4/5 use a per-build `webpackChunk<name>` array — poll briefly for it.
+  // webpack 4/5 use a per-build `webpackChunk<name>` array, and the runtime reads chunks queued before it
+  // (forEach) BEFORE it replaces push -- polling for the array is too late for anything loaded with the page.
+  // So while the page loads, Array#push is wrapped: (1) a chunk-shaped push (`[[ids], {id: factory}]`) gets its
+  // factories wrapped before they enter the array (a vendor chunk loaded ahead of the runtime); (2) the
+  // runtime's `chunkArray.push.bind(chunkArray)` (how webpack saves the original push) hooks that array at
+  // once, so its later `push = callback` assignment is seen (chunks loaded after the runtime). The wrapper
+  // only does a cheap shape check and is replaced by the native push once the page has loaded.
+  const nativePush = Array.prototype.push;
+  const nativeBind = Function.prototype.bind;
+  const chunkShaped = (a) => Array.isArray(a) && a.length >= 2 && Array.isArray(a[0]) && a[1] !== null && typeof a[1] === 'object';
+  const loadPush = function push(item) {
+    if (arguments.length === 1 && chunkShaped(item)) { try { wrapFactories(item[1]); } catch (_) {} }
+    return nativePush.apply(this, arguments);
+  };
+  hideFn(loadPush, nativePush);
+  try {
+    Object.defineProperty(loadPush, 'bind', {
+      value: hideFn(function bind(thisArg) {
+        if (Array.isArray(thisArg)) { try { hookChunkArray(thisArg); } catch (_) {} }
+        return nativeBind.apply(nativePush, arguments); // webpack keeps the native push as its parent
+      }, nativeBind),
+    });
+    Object.defineProperty(Array.prototype, 'push', { value: loadPush, writable: true, configurable: true, enumerable: false });
+  } catch (_) { /* push not replaceable here */ }
+  const restorePush = () => {
+    if (Array.prototype.push === loadPush) {
+      try { Object.defineProperty(Array.prototype, 'push', { value: nativePush, writable: true, configurable: true, enumerable: false }); } catch (_) {}
+    }
+  };
   let polls = 0;
   const chunkPoll = setInterval(() => {
     for (const k of Object.keys(globalThis)) {
       if (/^webpackChunk/.test(k) && Array.isArray(globalThis[k])) hookChunkArray(globalThis[k]);
     }
     sweepGlobals();
-    if (++polls > 40) clearInterval(chunkPoll);
+    // stop once the page has loaded (and at least ~12 s passed); never later than ~60 s
+    const loaded = typeof document === 'undefined' || document.readyState === 'complete';
+    if ((++polls > 40 && loaded) || polls > 200) { clearInterval(chunkPoll); restorePush(); }
   }, 300);
 
   // JSEncrypt (RSA)

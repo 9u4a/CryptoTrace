@@ -67,7 +67,7 @@ async function runCase(browser, c) {
     }
     const unk = r1.unknown.filter((u) => u.url && u.url.includes(api));
     if (unk.length) {
-      const armed = await tracer.traceFrames(tab.s, unk[0].frames.slice(0, 4));
+      const armed = await tracer.traceFrames(tab.s, tracer.pickFrames(unk[0].frames));
       out.notes.push('traced: ' + armed.join(' / '));
     }
     await tab.evaluate(`window.__run(${JSON.stringify(P(2))})`);
