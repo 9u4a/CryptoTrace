@@ -177,6 +177,7 @@ export function rsaCipher(spec, publicKey, privateKey) {
   const pub = publicKey ? asKeyObject(publicKey, 'public') : priv ? crypto.createPublicKey(priv) : null;
   return {
     deterministic: false,
+    canDecrypt: !!priv, // public key only: the field can be re-encrypted but never shown as plaintext
     encrypt(plain) {
       if (!pub) throw new Error('RSA encrypt needs a public key');
       return fromBytes(crypto.publicEncrypt({ key: pub, padding, oaepHash }, toBytes(plain, inEnc)), outEnc);

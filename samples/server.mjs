@@ -8,6 +8,8 @@
 //                          Body {ek, iv, ct}; response {iv, ct} under the same AES key.  (GET /api/pubkey → SPKI)
 //   C  POST /api/profile   WebCrypto AES-256-GCM inside a Web Worker, static key.
 //                          Body = base64(iv[12] || ciphertext+tag); response same format.
+//   D  POST /api/pin       jsbn RSAKey (Tom Wu rsa.js) PKCS#1 v1.5, hex output, in a urlencoded form field
+//                          `encPin`. Key from GET /api/rsakey {modulus, exponent} (hex), the usual Korean shape.
 //   GET  /api/accounts   plain JSON (fake demo accounts), mixed in like a real app.
 // Responses echo user input so reflected-payload detection can be tested through Burp.
 
@@ -103,6 +105,20 @@ export function createSampleServer({ keyDir = KEY_DIR } = {}) {
 
   const routes = {
     'GET /api/pubkey': async () => [200, { spki: rsa.spki }],
+
+    'GET /api/rsakey': async () => {
+      const jwk = rsa.privateKey.export({ format: 'jwk' });
+      return [200, { modulus: Buffer.from(jwk.n, 'base64url').toString('hex'), exponent: Buffer.from(jwk.e, 'base64url').toString('hex').replace(/^0+/, '') }];
+    },
+
+    'POST /api/pin': async (body) => {
+      const form = new URLSearchParams(body);
+      const userId = form.get('userId') ?? '';
+      const pin = crypto.privateDecrypt({ key: rsa.privateKey, padding: crypto.constants.RSA_PKCS1_PADDING },
+        Buffer.from(form.get('encPin') ?? '', 'hex')).toString('utf8');
+      if (!/^\d{6}$/.test(pin)) return [200, { ok: false, code: 'E403', msg: `invalid pin for ${userId}` }];
+      return [200, { ok: true, code: '0000', msg: `pin verified for ${userId}`, data: { pinLength: pin.length } }];
+    },
 
     'GET /api/accounts': async () => [200, { code: '0000', data: accounts.map((a) => ({ ...a })) }],
 

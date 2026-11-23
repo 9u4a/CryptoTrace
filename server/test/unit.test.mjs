@@ -455,3 +455,32 @@ test('scope host wildcard *.example.test matches subdomains and apex, not others
   assert.equal(matched('notexample.test'), null);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('encrypt-only field (RSA public key only): shown as ct-keep:<ciphertext>, kept as-is on re-encrypt, plaintext edits get encrypted', async () => {
+  const { transform } = await import('../src/message.mjs');
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
+  const spki = publicKey.export({ type: 'spki', format: 'der' });
+  const rsa = rsaCipher({ padding: 'pkcs1', outEncoding: 'hex' }, spki, null);
+  const profile = { ciphers: { r: rsa } };
+  const rules = [{ in: 'form', name: 'encPin', cipher: 'r' }, { in: 'json', path: '$.ek', cipher: 'r', parts: parsePath('$.ek') }];
+  const ct = rsa.encrypt('135790');
+  const form = { headers: [], path: '/pin', body: `userId=a&encPin=${ct}` };
+
+  const dec = transform(profile, [rules[0]], form, 'decrypt').message;
+
+  assert.match(decodeURIComponent(dec.body), new RegExp(`encPin=ct-keep:${ct}`));
+  // untouched -> the original ciphertext goes out, not an encryption of it
+  assert.equal(transform(profile, [rules[0]], dec, 'encrypt').message.body, form.body);
+  // replaced by plaintext -> encrypted
+  const edited = { ...dec, body: 'userId=a&encPin=999999' };
+  const out = transform(profile, [rules[0]], edited, 'encrypt').message.body;
+  const sent = new URLSearchParams(out).get('encPin');
+  assert.notEqual(sent, '999999');
+  assert.equal(crypto.privateDecrypt({ key: privateKey, padding: crypto.constants.RSA_PKCS1_PADDING }, Buffer.from(sent, 'hex')).toString(), '999999');
+
+  // JSON field, same contract
+  const json = { headers: [], path: '/t', body: JSON.stringify({ ek: ct, n: 1 }) };
+  const jdec = transform(profile, [rules[1]], json, 'decrypt').message;
+  assert.equal(JSON.parse(jdec.body).ek, `ct-keep:${ct}`);
+  assert.equal(transform(profile, [rules[1]], jdec, 'encrypt').message.body, json.body);
+});

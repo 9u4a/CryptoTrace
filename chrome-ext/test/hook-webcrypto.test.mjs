@@ -78,6 +78,10 @@ test('a non-extractable generated key still has its bytes captured, and stays no
   const pt = await subtle().decrypt({ name: 'AES-GCM', iv: IV }, k, ct);
   assert.equal(new TextDecoder().decode(pt), 'per-request', 'key still works');
   await assert.rejects(subtle().exportKey('raw', k), 'still non-extractable for the page');
+  assert.equal(last('encrypt').keySource, 'generateKey', 'a page-generated (random) key is marked as such');
+  const imported = await subtle().importKey('raw', KEY, 'AES-GCM', false, ['encrypt']);
+  await subtle().encrypt({ name: 'AES-GCM', iv: IV }, imported, new Uint8Array([1]));
+  assert.equal(last('encrypt').keySource, 'importKey');
 });
 
 test('a generated RSA key pair records both halves', async () => {

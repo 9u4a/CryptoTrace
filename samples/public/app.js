@@ -126,3 +126,19 @@ $('c-go').onclick = async () => {
   const { result } = await callWorker('decrypt', text);
   log('POST /api/profile 응답 (복호화)', JSON.parse(result));
 };
+
+// ---- D. jsbn RSAKey (Tom Wu rsa.js): PKCS#1 v1.5 hex in a urlencoded form field ----
+// The vendored jsbn-rsa build exposes `jsbn.RSAKey`; sites that include the original rsa.js use a
+// global `RSAKey` instead. Either way the page calls setPublic(modulusHex, exponentHex) + encrypt(text).
+$('d-go').onclick = async () => {
+  const { modulus, exponent } = await (await fetch('/api/rsakey', { headers: commonHeaders() })).json();
+  const rsa = new jsbn.RSAKey();
+  rsa.setPublic(modulus, exponent);
+  const body = new URLSearchParams({ userId: $('d-id').value, encPin: rsa.encrypt($('d-pin').value) }).toString();
+  const res = await fetch('/api/pin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...commonHeaders() },
+    body,
+  });
+  log('POST /api/pin 응답', await res.json());
+};

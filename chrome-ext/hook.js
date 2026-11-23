@@ -96,7 +96,7 @@
   if (subtle) {
     const O = {}; // the real methods, for our own internal calls (which must not be recorded)
     for (const n of ['importKey', 'exportKey']) O[n] = subtle[n];
-    const keyInfo = new WeakMap(); // CryptoKey -> { key: {encoding, value} }
+    const keyInfo = new WeakMap(); // CryptoKey -> { key: {encoding, value}, source: how the page got it }
     const b64urlToB64 = (s) => { const t = String(s).replace(/-/g, '+').replace(/_/g, '/'); return t + '='.repeat((4 - (t.length % 4)) % 4); };
     // Key material as the page supplied it. A symmetric JWK becomes its raw bytes (what every cipher spec
     // wants); an asymmetric JWK is kept whole.
@@ -130,31 +130,31 @@
     };
     const remember = async (key) => {
       if (!key || keyInfo.has(key) || !key.extractable) return;
-      try { keyInfo.set(key, { key: await exportBytes(key) }); } catch (_) {}
+      try { keyInfo.set(key, { key: await exportBytes(key), source: 'unknown' }); } catch (_) {}
     };
     const infoOf = async (key) => { await remember(key); const i = key && keyInfo.get(key); return i ? i.key : null; };
     // Produce a key the page asked for as non-extractable WITHOUT losing its bytes: make it extractable,
     // read the bytes, then import those bytes back with the page's own extractable flag and usages.
     // The page gets a key with the same algorithm/usages/extractable it requested. Any failure -> the
     // unmodified original call, so the page is never broken by this.
-    const reimport = async (k, extractable) => {
+    const reimport = async (k, extractable, source) => {
       const bytes = await exportBytes(k);
-      keyInfo.set(k, { key: bytes });
+      keyInfo.set(k, { key: bytes, source });
       if (extractable || k.type === 'public') return k; // public keys are always extractable
       const format = k.type === 'secret' ? 'raw' : 'pkcs8';
       const raw = Uint8Array.from(atob(bytes.value), (c) => c.charCodeAt(0));
       const again = await O.importKey.call(subtle, format, raw, k.algorithm, false, k.usages);
-      keyInfo.set(again, { key: bytes });
+      keyInfo.set(again, { key: bytes, source });
       return again;
     };
-    const capturing = (orig, self, args, extIdx, finish) => {
+    const capturing = (orig, self, args, extIdx, source, finish) => {
       const forced = Array.prototype.slice.call(args);
       const extractable = !!forced[extIdx];
       forced[extIdx] = true;
       return orig.apply(self, forced).then(async (out) => {
         const result = out && out.publicKey
-          ? { publicKey: await reimport(out.publicKey, true), privateKey: await reimport(out.privateKey, extractable) }
-          : await reimport(out, extractable);
+          ? { publicKey: await reimport(out.publicKey, true, source), privateKey: await reimport(out.privateKey, extractable, source) }
+          : await reimport(out, extractable, source);
         finish(result);
         return result;
       }).catch(() => orig.apply(self, args)); // e.g. an algorithm that can't be exported -> plain call
@@ -166,7 +166,7 @@
     wrap(subtle, 'importKey', (orig) => function (format, keyData, algorithm) {
       const where = site();
       return orig.apply(this, arguments).then((key) => {
-        keyInfo.set(key, { key: keyMaterial(format, keyData) });
+        keyInfo.set(key, { key: keyMaterial(format, keyData), source: 'importKey' });
         send({ lib: 'webcrypto', op: 'importKey', alg: algParams(algorithm), format, key: keyInfo.get(key).key, site: where });
         return key;
       });
@@ -181,13 +181,13 @@
     // generateKey(alg, extractable, usages): per-request random keys (e.g. an RSA-wrapped AES session key).
     wrap(subtle, 'generateKey', (orig) => function (algorithm) {
       const where = site();
-      return capturing(orig, this, arguments, 1, (k) =>
+      return capturing(orig, this, arguments, 1, 'generateKey', (k) =>
         send({ lib: 'webcrypto', op: 'generateKey', alg: algParams(algorithm), ...keyFields(k), site: where }));
     });
     // deriveKey(alg, baseKey, derivedAlg, extractable, usages): PBKDF2/HKDF/ECDH -> the cipher key.
     wrap(subtle, 'deriveKey', (orig) => function (algorithm, baseKey, derivedAlg) {
       const where = site();
-      return capturing(orig, this, arguments, 3, (k) =>
+      return capturing(orig, this, arguments, 3, 'deriveKey', (k) =>
         send({ lib: 'webcrypto', op: 'deriveKey', alg: algParams(algorithm), baseKey: (keyInfo.get(baseKey) || {}).key || null,
           derivedAlg: algParams(derivedAlg), ...keyFields(k), site: where }));
     });
@@ -211,7 +211,7 @@
     // unwrapKey(format, wrapped, unwrappingKey, unwrapAlg, unwrappedAlg, extractable, usages)
     wrap(subtle, 'unwrapKey', (orig) => function (format, wrapped, unwrappingKey, unwrapAlg, unwrappedAlg) {
       const where = site();
-      return capturing(orig, this, arguments, 5, (k) =>
+      return capturing(orig, this, arguments, 5, 'unwrapKey', (k) =>
         send({ lib: 'webcrypto', op: 'unwrapKey', format, alg: algParams(unwrapAlg), unwrappedAlg: algParams(unwrappedAlg),
           input: enc(wrapped), unwrappingKey: (keyInfo.get(unwrappingKey) || {}).key || null, ...keyFields(k), site: where }));
     });
@@ -232,6 +232,7 @@
             lib: 'webcrypto', op, alg: algParams(alg),
             iv: alg && alg.iv ? enc(alg.iv) : null,
             key: await infoOf(key), // a key we never saw created (e.g. from IndexedDB) is read now if extractable
+            keySource: (keyInfo.get(key) || {}).source || null, // generateKey = random per use, not a fixed key
             input: enc(data),
             output: op === 'verify' ? { encoding: 'bool', value: String(out) } : enc(out),
             site: where,

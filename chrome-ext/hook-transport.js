@@ -16,8 +16,23 @@
     } catch (_) { /* unserializable; skip */ }
   };
 
-  // Describe a request body: scalar string, or the JSON leaf paths it contains.
-  const describeBody = (body) => {
+  // Describe a request body for correlation: JSON leaf paths, form / multipart fields, or a scalar string.
+  const formFields = (params) => { const out = []; params.forEach((value, name) => out.push({ name, value })); return out; };
+  // key=value pairs. A lone `x=...` is too ambiguous (base64 padding looks like one), so without a form
+  // Content-Type at least two pairs are required.
+  const FORM_RE = /^[\w.\-[\]%]+=[^&]*(&[\w.\-[\]%]+=[^&]*)+$/;
+  const describeBody = (body, contentType) => {
+    try {
+      if (typeof URLSearchParams === 'function' && body instanceof URLSearchParams) return { kind: 'form', fields: formFields(body) };
+      if (typeof FormData === 'function' && body instanceof FormData) {
+        const fields = [];
+        body.forEach((value, name) => { if (typeof value === 'string') fields.push({ name, value }); }); // files skipped
+        return { kind: 'multipart', fields };
+      }
+    } catch (_) { /* fall through */ }
+    if (typeof body === 'string' && body && (/x-www-form-urlencoded/i.test(contentType || '') || FORM_RE.test(body))) {
+      try { return { kind: 'form', fields: formFields(new URLSearchParams(body)) }; } catch (_) { /* not a form after all */ }
+    }
     if (typeof body !== 'string' || !body) return { kind: typeof body === 'string' ? 'text' : 'none', sample: '' };
     try {
       const j = JSON.parse(body);
@@ -60,9 +75,10 @@
       try {
         const url = typeof input === 'string' ? input : input && input.url;
         const method = (init && init.method) || (input && input.method) || 'GET';
-        const body = init && typeof init.body === 'string' ? init.body : null;
+        const headers = parseHeaders(init && init.headers);
+        const ctype = (headers.find(([k]) => /^content-type$/i.test(k)) || [])[1];
         send({ lib: 'transport', op: 'fetch', url, method, query: queryOf(url),
-          headers: parseHeaders(init && init.headers), body: describeBody(body) });
+          headers, body: describeBody(init ? init.body : null, ctype) });
       } catch (_) { /* never break the page's fetch */ }
       const p = orig.apply(this, arguments);
       try {
@@ -90,8 +106,9 @@
     XHR.prototype.send = function (body) {
       try {
         const c = this.__ct || {};
+        const ctype = ((c.headers || []).find(([k]) => /^content-type$/i.test(k)) || [])[1];
         send({ lib: 'transport', op: 'xhr', url: c.url, method: c.method, query: queryOf(c.url),
-          headers: c.headers || [], body: describeBody(typeof body === 'string' ? body : null) });
+          headers: c.headers || [], body: describeBody(body, ctype) });
         this.addEventListener('load', function () {
           try {
             const text = this.responseType === '' || this.responseType === 'text' ? this.responseText : null;

@@ -58,6 +58,23 @@ test('C: AES-GCM whole body with IV prefix', async () => {
   assert.equal(JSON.parse(gcmDecrypt(C_KEY, raw.subarray(0, 12), raw.subarray(12))).msg, 'profile saved for Bob');
 });
 
+test('D: jsbn-style RSA PKCS#1 v1.5 (hex) in a urlencoded form field', async () => {
+  const { modulus, exponent } = await (await fetch(base + '/api/rsakey')).json();
+  assert.match(modulus, /^[0-9a-f]+$/);
+  assert.equal(exponent, '10001');
+  const pub = crypto.createPublicKey({ key: { kty: 'RSA', n: Buffer.from(modulus, 'hex').toString('base64url'), e: 'AQAB' }, format: 'jwk' });
+  const enc = (s) => crypto.publicEncrypt({ key: pub, padding: crypto.constants.RSA_PKCS1_PADDING }, Buffer.from(s)).toString('hex');
+  const ok = await post('/api/pin', `userId=minjun.kim&encPin=${enc('135790')}`, 'application/x-www-form-urlencoded');
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await ok.json(), { ok: true, code: '0000', msg: 'pin verified for minjun.kim', data: { pinLength: 6 } });
+  const bad = await post('/api/pin', `userId=minjun.kim&encPin=${enc('12ab')}`, 'application/x-www-form-urlencoded');
+  assert.equal((await bad.json()).code, 'E403', 'a non-6-digit PIN is refused (reflected for payload tests)');
+  // OpenSSL's implicit rejection (Marvin mitigation): bad PKCS#1 v1.5 ciphertext decrypts to random bytes
+  // instead of throwing, so garbage is refused as a wrong PIN rather than with a 400.
+  const garbage = await post('/api/pin', 'userId=x&encPin=00ff', 'application/x-www-form-urlencoded');
+  assert.equal((await garbage.json()).code, 'E403');
+});
+
 test('static files served, traversal blocked', async () => {
   assert.equal((await fetch(base + '/')).status, 200);
   assert.equal((await fetch(base + '/worker.js')).status, 200);

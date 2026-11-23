@@ -112,6 +112,16 @@
     <button id="c-go">저장</button>
   </section>
 
+  <section class="card">
+    <h2>2차 비밀번호 확인</h2>
+    <p class="sub">jsbn <code>RSAKey</code> (rsa.js) PKCS#1 v1.5 → hex, 폼 필드 <code>encPin</code> (<code>application/x-www-form-urlencoded</code>)</p>
+    <label for="d-id">아이디</label>
+    <input id="d-id" value="minjun.kim">
+    <label for="d-pin">2차 비밀번호 (숫자 6자리)</label>
+    <input id="d-pin" type="password" value="135790" inputmode="numeric">
+    <button id="d-go">확인</button>
+  </section>
+
   <section class="card wide">
     <h2>응답 로그 <span class="tag">복호화된 응답</span></h2>
     <p class="sub">페이지가 응답을 복호화한 결과입니다. 네트워크/Burp에는 암호문만 보입니다.</p>
@@ -121,6 +131,7 @@
 <footer>DemoBank는 실존하지 않는 가상 서비스입니다 · CryptoTrace sample target</footer>
 
 <script src="vendor/crypto-js-4.2.0.js"></script>
+<script src="vendor/jsbn-rsa-1.0.4.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

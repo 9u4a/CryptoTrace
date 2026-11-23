@@ -5,6 +5,10 @@ import { getAt, setAt, parsePath, expand } from './jsonpath.mjs';
 import { computeRule } from './integrity.mjs';
 
 export const PLAIN_MARKER = 'x-ct-plain';
+// A field whose cipher can only encrypt (e.g. RSA with just the public key) can't be shown as plaintext.
+// Decrypt shows it as KEEP + <ciphertext>; encrypt sends such a value back unchanged (instead of encrypting
+// the ciphertext again). Replace the whole value with plaintext to have that encrypted.
+export const KEEP = 'ct-keep:';
 
 const findHeader = (headers, name) => headers.findIndex(([n]) => n.toLowerCase() === name.toLowerCase());
 
@@ -121,7 +125,9 @@ export function transform(profile, rules, msg, direction, integrity = [], reques
   const rulePath = requestPath != null ? splitPath(requestPath)[0] : pathname;
   const applied = [];
   let json; // parsed lazily, shared by all json rules
-  const run = (cipher, v) => (direction === 'decrypt' ? cipher.decrypt(v) : cipher.encrypt(v));
+  const dec = (cipher, v) => (cipher.canDecrypt === false ? KEEP + v : cipher.decrypt(v));
+  const enc = (cipher, v) => (typeof v === 'string' && v.startsWith(KEEP) ? v.slice(KEEP.length) : cipher.encrypt(v));
+  const run = (cipher, v) => (direction === 'decrypt' ? dec(cipher, v) : enc(cipher, v));
 
   for (const r of rules) {
     if (r.pathRe && !r.pathRe.test(rulePath || '')) continue;
@@ -130,7 +136,8 @@ export function transform(profile, rules, msg, direction, integrity = [], reques
     try {
       if (r.in === 'body') {
         if (!body) continue;
-        body = direction === 'decrypt' ? pretty(cipher.decrypt(body)) : cipher.encrypt(compact(body));
+        body = direction === 'decrypt' ? (cipher.canDecrypt === false ? KEEP + body : pretty(cipher.decrypt(body)))
+          : body.startsWith(KEEP) ? body.slice(KEEP.length) : cipher.encrypt(compact(body));
       } else if (r.in === 'header') {
         const i = findHeader(headers, r.name);
         if (i < 0) continue;
@@ -156,7 +163,8 @@ export function transform(profile, rules, msg, direction, integrity = [], reques
         for (const parts of paths) {
           const v = getAt(json, parts);
           if (v === undefined) continue;
-          setAt(json, parts, direction === 'decrypt' ? embed(cipher.decrypt(v)) : cipher.encrypt(unembed(v)));
+          setAt(json, parts, direction === 'decrypt' ? (cipher.canDecrypt === false ? KEEP + v : embed(cipher.decrypt(v)))
+            : typeof v === 'string' && v.startsWith(KEEP) ? v.slice(KEEP.length) : cipher.encrypt(unembed(v)));
           any = true;
         }
         if (!any) continue;
