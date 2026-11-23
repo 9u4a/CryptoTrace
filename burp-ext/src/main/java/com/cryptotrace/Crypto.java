@@ -77,7 +77,7 @@ public final class Crypto {
         HttpRequest rebuilt = req;
         if (out.has("path") && !out.get("path").getAsString().equals(req.path())) rebuilt = rebuilt.withPath(out.get("path").getAsString());
         rebuilt = applyHeaders(rebuilt, req.headers(), out.getAsJsonArray("headers"));
-        rebuilt = isBase64Body(out) ? rebuilt.withBody(decodeBody(out)) : rebuilt.withBody(out.get("body").getAsString());
+        rebuilt = isBase64Body(out) ? rebuilt.withBody(decodeBody(out)) : rebuilt.withBody(ByteArray.byteArray(Utf8.bytes(out.get("body").getAsString())));
         return new Result<>(matched, rebuilt, res.getAsJsonArray("applied"));
     }
 
@@ -85,7 +85,7 @@ public final class Crypto {
     private static void putBody(JsonObject msg, ByteArray body) {
         byte[] raw = body.getBytes();
         if (isUtf8(raw)) {
-            msg.addProperty("body", new String(raw, StandardCharsets.UTF_8));
+            msg.addProperty("body", Utf8.text(raw));
         } else {
             msg.addProperty("body", Base64.getEncoder().encodeToString(raw));
             msg.addProperty("bodyEncoding", "base64");
@@ -125,10 +125,10 @@ public final class Crypto {
         for (HttpHeader h : resp.headers()) if (!want.containsKey(h.name().toLowerCase())) rebuilt = rebuilt.withRemovedHeader(h.name());
         for (JsonElement e : headers) {
             String n = e.getAsJsonArray().get(0).getAsString();
-            String v = e.getAsJsonArray().get(1).getAsString();
+            String v = Utf8.toBurpHeader(e.getAsJsonArray().get(1).getAsString());
             rebuilt = rebuilt.hasHeader(n) ? rebuilt.withUpdatedHeader(n, v) : rebuilt.withAddedHeader(n, v);
         }
-        rebuilt = isBase64Body(out) ? rebuilt.withBody(decodeBody(out)) : rebuilt.withBody(out.get("body").getAsString());
+        rebuilt = isBase64Body(out) ? rebuilt.withBody(decodeBody(out)) : rebuilt.withBody(ByteArray.byteArray(Utf8.bytes(out.get("body").getAsString())));
         return new Result<>(matched, rebuilt, res.getAsJsonArray("applied"));
     }
 
@@ -138,7 +138,7 @@ public final class Crypto {
         for (HttpHeader h : before) if (!want.containsKey(h.name().toLowerCase())) r = r.withRemovedHeader(h.name());
         for (JsonElement e : after) {
             String n = e.getAsJsonArray().get(0).getAsString();
-            String v = e.getAsJsonArray().get(1).getAsString();
+            String v = Utf8.toBurpHeader(e.getAsJsonArray().get(1).getAsString());
             String old = r.headerValue(n);
             if (old == null) r = r.withAddedHeader(n, v);
             else if (!old.equals(v)) r = r.withUpdatedHeader(n, v);
@@ -157,7 +157,7 @@ public final class Crypto {
         for (HttpHeader h : headers) {
             JsonArray pair = new JsonArray();
             pair.add(h.name());
-            pair.add(h.value());
+            pair.add(Utf8.fromBurpHeader(h.value())); // real text for the server
             arr.add(pair);
         }
         return arr;

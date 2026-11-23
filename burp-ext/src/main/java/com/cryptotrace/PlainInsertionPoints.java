@@ -65,7 +65,7 @@ public final class PlainInsertionPoints implements AuditInsertionPointProvider {
     private static boolean jsonPoints(HttpRequest plain, List<Object> prefix, List<AuditInsertionPoint> out) {
         JsonElement root;
         try {
-            root = JsonParser.parseString(plain.bodyToString());
+            root = JsonParser.parseString(Utf8.text(plain.body().getBytes()));
         } catch (RuntimeException e) {
             return false;
         }
@@ -110,8 +110,8 @@ public final class PlainInsertionPoints implements AuditInsertionPointProvider {
         @Override
         public HttpRequest buildHttpRequestWithPayload(ByteArray payload) {
             JsonElement copy = root.deepCopy();
-            JsonPaths.set(copy, path, new JsonPrimitive(payload.toString()));
-            return plain.withBody(ServerClient.GSON.toJson(copy));
+            JsonPaths.set(copy, path, new JsonPrimitive(Utf8.text(payload.getBytes()))); // payload bytes are UTF-8 text
+            return plain.withBody(burp.api.montoya.core.ByteArray.byteArray(Utf8.bytes(ServerClient.GSON.toJson(copy))));
         }
     }
 
@@ -127,7 +127,7 @@ public final class PlainInsertionPoints implements AuditInsertionPointProvider {
 
         @Override
         public String baseValue() {
-            return plain.bodyToString();
+            return Utf8.text(plain.body().getBytes());
         }
 
         @Override
@@ -182,7 +182,7 @@ public final class PlainInsertionPoints implements AuditInsertionPointProvider {
 
         @Override
         public HttpRequest buildHttpRequestWithPayload(ByteArray payload) {
-            String encoded = java.net.URLEncoder.encode(payload.toString(), java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
+            String encoded = java.net.URLEncoder.encode(Utf8.text(payload.getBytes()), java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
             return plain.withUpdatedParameters(HttpParameter.urlParameter(param, encoded));
         }
 

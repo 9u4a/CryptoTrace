@@ -95,7 +95,7 @@ public final class CryptoHttpHandler implements HttpHandler {
         String url = res.initiatingRequest() != null ? res.initiatingRequest().url() : null;
         List<SessionKeys.Capture> found;
         try {
-            found = sessionKeys.extract(url, res.bodyToString(), res::headerValue);
+            found = sessionKeys.extract(url, Utf8.text(res.body().getBytes()), res::headerValue);
         } catch (RuntimeException e) {
             return; // never let capture disturb the response pipeline
         }
