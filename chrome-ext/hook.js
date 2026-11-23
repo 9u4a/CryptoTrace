@@ -403,6 +403,44 @@
     });
   };
 
+  // aes-js: `new aesjs.ModeOfOperation.cbc(key, iv).encrypt(bytes)` (also ecb/ctr/cfb/ofb). No padding of its
+  // own -- the page pads (aesjs.padding.pkcs7) before encrypting, so `input` is the padded bytes. The key
+  // stays on the instance (`_aes.key`); the IV is read from the mode's chaining state just before each call,
+  // which is exactly the IV that call uses (the constructor IV on the first call).
+  const bytesEnc = (v) => {
+    if (Array.isArray(v)) { try { return enc(Uint8Array.from(v)); } catch (_) { return null; } }
+    return enc(v);
+  };
+  const aesjsIv = (m) => {
+    if (!m) return null;
+    if (m._lastCipherblock) return bytesEnc(m._lastCipherblock); // cbc
+    if (m._shiftRegister) return bytesEnc(m._shiftRegister); // cfb
+    if (m._lastPrecipher) return bytesEnc(m._lastPrecipher); // ofb
+    if (m._counter && m._counter._counter) return bytesEnc(m._counter._counter); // ctr: the counter block
+    return null; // ecb
+  };
+  const installAesjs = (A) => {
+    if (!A || !A.ModeOfOperation || A.__ct_wrapped) return;
+    mark(A);
+    for (const mode of Object.keys(A.ModeOfOperation)) {
+      const M = A.ModeOfOperation[mode];
+      if (typeof M !== 'function' || !M.prototype) continue;
+      for (const op of ['encrypt', 'decrypt']) {
+        wrap(M.prototype, op, (orig) => function (data) {
+          const where = site();
+          const key = this._aes && this._aes.key ? bytesEnc(this._aes.key) : null;
+          const iv = aesjsIv(this);
+          const input = bytesEnc(data);
+          const out = orig.apply(this, arguments);
+          const alg = { name: 'AES', mode };
+          if (mode === 'cfb' && this.segmentSize) alg.segmentSize = this.segmentSize;
+          send({ lib: 'aesjs', op, alg, key, iv, input, output: bytesEnc(out), site: where });
+          return out;
+        });
+      }
+    }
+  };
+
   // Object-exporting crypto libraries. To add one: write an installer above and append
   // { name, detect, install } here — it is then hooked both as a global and inside webpack bundles.
   const isCryptoJS = (x) => x && x.AES && typeof x.AES.encrypt === 'function' && x.enc && x.lib;
@@ -413,6 +451,7 @@
     { name: 'sjcl', detect: isSjcl, install: installSjcl },
     { name: 'forge', detect: isForge, install: installForge },
     { name: 'RSAKey', detect: isRSAKey, install: installJsbnRSA },
+    { name: 'aesjs', detect: (x) => x && x.ModeOfOperation && typeof x.ModeOfOperation.cbc === 'function' && x.padding, install: installAesjs },
     { name: 'jsbn', detect: (x) => x && isRSAKey(x.RSAKey), install: (x) => installJsbnRSA(x.RSAKey) },
   ];
   for (const l of LIBS) trapGlobal(l.name, l.install);

@@ -117,3 +117,33 @@ test('jsbn RSAKey declared as global functions (classic <script> include) is cap
   assert.equal(parseInt(key.e, 16), 65537);
   assert.equal(Object.keys(globalThis.RSAKey.prototype).includes('__ct_wrapped'), false, 'no enumerable marker on the prototype');
 });
+
+test('aes-js ModeOfOperation (CBC, CTR, CFB) is captured with key, per-call IV/counter, and still works', () => {
+  vm.runInThisContext(read('aes-js-3.1.2.js'), { filename: 'aes-js.js' });
+  const A = globalThis.aesjs;
+  assert.ok(A && A.__ct_wrapped, 'aes-js was detected and wrapped');
+  const key = crypto.randomBytes(32), iv = crypto.randomBytes(16);
+  const padded = A.padding.pkcs7.pad(A.utils.utf8.toBytes('hello aes-js'));
+  const ct = new A.ModeOfOperation.cbc([...key], [...iv]).encrypt(padded);
+  const ref = crypto.createCipheriv('aes-256-cbc', key, iv);
+  assert.equal(Buffer.from(ct).toString('hex'), Buffer.concat([ref.update('hello aes-js'), ref.final()]).toString('hex'), 'library output unchanged');
+  const rec = last('aesjs', 'encrypt');
+  assert.ok(rec, 'encrypt captured');
+  assert.deepEqual({ ...rec.alg }, { name: 'AES', mode: 'cbc' });
+  assert.equal(rec.key.value, key.toString('base64'));
+  assert.equal(rec.iv.value, iv.toString('base64'));
+  assert.equal(rec.input.value, Buffer.from(padded).toString('base64'));
+  assert.equal(rec.output.value, Buffer.from(ct).toString('base64'));
+  const back = new A.ModeOfOperation.cbc([...key], [...iv]).decrypt(ct);
+  assert.equal(A.utils.utf8.fromBytes(A.padding.pkcs7.strip(back)), 'hello aes-js');
+  assert.equal(last('aesjs', 'decrypt').output.value, Buffer.from(back).toString('base64'));
+
+  const ctr = new A.ModeOfOperation.ctr([...key.subarray(0, 16)], new A.Counter(5));
+  ctr.encrypt(A.utils.utf8.toBytes('counter mode'));
+  const c = last('aesjs', 'encrypt');
+  assert.equal(c.alg.mode, 'ctr');
+  assert.equal(Buffer.from(c.iv.value, 'base64').toString('hex'), '00000000000000000000000000000005', 'initial counter block = OpenSSL CTR iv'); // leakcheck:allow
+
+  new A.ModeOfOperation.cfb([...key], [...iv], 1).encrypt(A.utils.utf8.toBytes('cfb8'));
+  assert.deepEqual({ ...last('aesjs', 'encrypt').alg }, { name: 'AES', mode: 'cfb', segmentSize: 1 });
+});

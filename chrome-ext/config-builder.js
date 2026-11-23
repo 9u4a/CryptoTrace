@@ -136,6 +136,36 @@
     return bytes ? utf8Text(bytes) : null;
   }
 
+  // PKCS#7 pad length at the end of `bytes` (1..16), or 0 if it isn't PKCS#7-padded.
+  function pkcs7Len(bytes) {
+    if (!bytes || !bytes.length || bytes.length % 16) return 0;
+    const n = bytes[bytes.length - 1];
+    if (n < 1 || n > 16) return 0;
+    for (let i = bytes.length - n; i < bytes.length; i++) if (bytes[i] !== n) return 0;
+    return n;
+  }
+  // aes-js: mode from the record; the page pads by itself, so PKCS#7 is read off the padded plaintext.
+  function aesjsAlg(r, keyBytes) {
+    const mode = String((r.alg && r.alg.mode) || 'cbc').toLowerCase();
+    const seg = r.alg && r.alg.segmentSize;
+    const m = mode === 'cfb' ? (seg === 1 ? 'cfb8' : seg === 16 ? 'cfb' : null) : mode;
+    if (!['cbc', 'ecb', 'ctr', 'cfb', 'cfb8', 'ofb'].includes(m)) return null;
+    const spec = { alg: `aes-${aesBits(keyBytes)}-${m}`, inEncoding: 'utf8', outEncoding: 'base64' };
+    if (m === 'cbc' || m === 'ecb') spec.padding = pkcs7Len(recBytes(r.op === 'encrypt' ? r.input : r.output)) ? 'pkcs7' : 'none';
+    else spec.padding = 'none'; // stream modes
+    return spec;
+  }
+  // Plaintext text for a selftest vector: aes-js plaintext still carries the page's PKCS#7 padding.
+  function plainOf(r, spec) {
+    const pv = r.op === 'encrypt' ? r.input : r.output;
+    if (r.lib === 'aesjs' && spec.padding === 'pkcs7') {
+      const b = recBytes(pv);
+      const n = pkcs7Len(b);
+      return n ? utf8Text(b.slice(0, b.length - n)) : null;
+    }
+    return asText(pv);
+  }
+
   // Guess byte-encoding of a captured key/iv string.
   function keyEntry(obj) {
     if (!obj) return null;
@@ -208,6 +238,7 @@
       if (r.lib === 'webcrypto') spec = webcryptoAlg(r.alg, keyBytes);
       else if (r.lib === 'cryptojs') spec = cryptojsAlg(r, keyBytes);
       else if (r.lib === 'jsencrypt') spec = { alg: 'rsa', padding: 'pkcs1' };
+      else if (r.lib === 'aesjs') spec = aesjsAlg(r, keyBytes);
       else if (r.lib === 'jsbn') spec = { alg: 'rsa', padding: 'pkcs1', inEncoding: 'utf8', outEncoding: 'hex' };
       if (!spec) continue;
 
@@ -291,7 +322,7 @@
       if (otherKey) continue; // a vector made with another key would fail this cipher's selftest
       // RSA encryption is randomized: a vector can only be checked by decrypting, which needs the private key.
       if (cfg.ciphers[id].alg === 'rsa' && !cfg.ciphers[id].privateKey) continue;
-      const plain = asText(r.op === 'encrypt' ? r.input : r.output);
+      const plain = plainOf(r, cfg.ciphers[id]);
       const ct = r.op === 'encrypt' ? r.output : r.input;
       if (plain != null && ct && ct.value != null) {
         const c = cfg.ciphers[id];

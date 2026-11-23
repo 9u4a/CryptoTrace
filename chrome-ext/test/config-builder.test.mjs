@@ -443,3 +443,44 @@ test('ciphertext re-encoded as hex on the wire (apply.encoding) -> outEncoding h
   const res = loadIntoEngine(cfg);
   assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }], JSON.stringify(res));
 });
+
+// What hook.js records for aes-js: raw bytes in/out; the page's own PKCS#7 padding is part of `input`.
+function aesjsRecord(mode, key, iv, plain, { segmentSize, pad = true } = {}) {
+  const ossl = `aes-${key.length * 8}-${mode === 'cfb' && segmentSize === 1 ? 'cfb8' : mode}`;
+  let input = Buffer.from(plain);
+  if (pad && (mode === 'cbc' || mode === 'ecb')) { const n = 16 - (input.length % 16); input = Buffer.concat([input, Buffer.alloc(n, n)]); }
+  const c = crypto.createCipheriv(ossl, key, mode === 'ecb' ? null : iv);
+  c.setAutoPadding(false);
+  const ct = Buffer.concat([c.update(input), c.final()]);
+  const alg = { name: 'AES', mode };
+  if (segmentSize) alg.segmentSize = segmentSize;
+  return { lib: 'aesjs', op: 'encrypt', alg, key: { encoding: 'base64', value: b64(key) },
+    iv: mode === 'ecb' ? null : { encoding: 'base64', value: b64(iv) },
+    input: { encoding: 'base64', value: b64(input) }, output: { encoding: 'base64', value: b64(ct) }, frame: 'https://api.shop.test/' };
+}
+
+test('aes-js records -> OpenSSL cipher names, PKCS#7 detected from the padded input, all self-test', () => {
+  const buildConfig = loadBuilder();
+  const iv = crypto.randomBytes(16);
+  const cases = [
+    [aesjsRecord('cbc', crypto.randomBytes(32), iv, 'cbc text'), { alg: 'aes-256-cbc', padding: 'pkcs7' }],
+    [aesjsRecord('ecb', crypto.randomBytes(16), iv, 'ecb text'), { alg: 'aes-128-ecb', padding: 'pkcs7' }],
+    [aesjsRecord('ctr', crypto.randomBytes(16), Buffer.from('00000000000000000000000000000005', 'hex'), 'ctr text'), { alg: 'aes-128-ctr' }], // counter block, not a key  leakcheck:allow
+    [aesjsRecord('cfb', crypto.randomBytes(32), iv, 'cfb8 text', { segmentSize: 1 }), { alg: 'aes-256-cfb8' }],
+    [aesjsRecord('ofb', crypto.randomBytes(24), iv, 'ofb text'), { alg: 'aes-192-ofb' }],
+  ];
+  for (const [rec, want] of cases) {
+    const cfg = buildConfig([rec]);
+    const c = cfg.ciphers.c1;
+    assert.equal(c.alg, want.alg);
+    if (want.padding) assert.equal(c.padding, want.padding);
+    assert.equal(cfg.selftest.length, 1, want.alg + ': a vector with the unpadded text');
+    assert.ok(!/[\x00-\x10]$/.test(cfg.selftest[0].plain), 'padding stripped from the vector');
+    const res = loadIntoEngine(cfg);
+    assert.equal(res.error, undefined, res.error);
+    assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }], want.alg + ' ' + JSON.stringify(res.selftest));
+  }
+  // block mode whose input isn't PKCS#7-padded (page pads some other way) -> padding none
+  const nopad = aesjsRecord('cbc', crypto.randomBytes(32), iv, 'exactly 16 bytes', { pad: false });
+  assert.equal(buildConfig([nopad]).ciphers.c1.padding, 'none');
+});
