@@ -2,6 +2,7 @@
 // A cipher turns a plaintext string into an encoded ciphertext string and back.
 import crypto from 'node:crypto';
 import { toBytes, fromBytes } from './encoding.mjs';
+import { SEED_ALGS, createSeedCipher } from './seed.mjs';
 
 const OPENSSL = new Set(crypto.getCiphers());
 const BLOCK = 16;
@@ -30,7 +31,10 @@ function unpad(buf, padding) {
  */
 export function symmetricCipher(spec, keyBytes) {
   const alg = spec.alg.toLowerCase();
-  if (!OPENSSL.has(alg)) throw new Error(`cipher "${alg}" not available in this Node/OpenSSL build`);
+  const seed = SEED_ALGS.has(alg); // built in (seed.mjs): Node's OpenSSL has no SEED
+  if (!seed && !OPENSSL.has(alg)) throw new Error(`cipher "${alg}" not available in this Node/OpenSSL build`);
+  const createC = seed ? (a, k, iv) => createSeedCipher(a, k, iv, false) : crypto.createCipheriv;
+  const createD = seed ? (a, k, iv) => createSeedCipher(a, k, iv, true) : crypto.createDecipheriv;
   // AEAD = authenticated: append a tag on encrypt, verify it on decrypt. GCM and ChaCha20-Poly1305
   // share the same Node API (getAuthTag/setAuthTag, authTagLength, 12-byte nonce, no padding).
   const isAead = alg.endsWith('-gcm') || alg === 'chacha20-poly1305';
@@ -68,7 +72,7 @@ export function symmetricCipher(spec, keyBytes) {
       if (ivField && !(ctx && typeof ctx.setIv === 'function')) throw new Error('iv is written to another field of the message, which is not available here');
       const iv = ivPrefix || ivField ? crypto.randomBytes(ivLen) : staticIv;
       if (ivField) ctx.setIv(fromBytes(iv, ivEnc));
-      const c = crypto.createCipheriv(alg, keyBytes, isEcb ? null : iv, isAead ? { authTagLength: tagLen } : undefined);
+      const c = createC(alg, keyBytes, isEcb ? null : iv, isAead ? { authTagLength: tagLen } : undefined);
       c.setAutoPadding(usePadding);
       if (aad) c.setAAD(aad);
       const body = Buffer.concat([c.update(pad(toBytes(plain, inEnc), isAead ? 'none' : padding)), c.final()]);
@@ -82,7 +86,7 @@ export function symmetricCipher(spec, keyBytes) {
         iv = raw.subarray(0, ivLen);
         raw = raw.subarray(ivLen);
       }
-      const d = crypto.createDecipheriv(alg, keyBytes, isEcb ? null : iv, isAead ? { authTagLength: tagLen } : undefined);
+      const d = createD(alg, keyBytes, isEcb ? null : iv, isAead ? { authTagLength: tagLen } : undefined);
       d.setAutoPadding(usePadding);
       if (aad) d.setAAD(aad);
       if (isAead) {

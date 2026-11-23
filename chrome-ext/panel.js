@@ -9,6 +9,7 @@ const BINDING = '__cryptotrace_emit';
 let attached = false;
 let hooked = false;
 let hookSource = '';
+let tracer = null; // tracer.js instance while attached
 const records = []; // every call record, in order
 const childSessions = new Set();
 
@@ -79,6 +80,8 @@ async function attach() {
     });
   });
   attached = true;
+  // L3 function tracer (tracer.js): started per "unknown" row; its records go through addRecord like hooks'.
+  tracer = window.CryptoTraceTracer.createTracer({ cdp, emit: (r) => addRecord(r), keyOf: (t) => t.sessionId || 'main' });
   await cdp('Page.enable');
   await installInto(DEBUGGEE);
   // Reach workers, iframes and popups: attach to child targets as they appear.
@@ -91,6 +94,7 @@ async function attach() {
 async function detach() {
   if (!attached) return;
   attached = false;
+  tracer = null; // its breakpoints go away with the debugger session
   childSessions.clear();
   await new Promise((resolve) => chrome.debugger.detach(DEBUGGEE, () => { void chrome.runtime.lastError; resolve(); }));
 }
@@ -140,6 +144,13 @@ function onEvent(source, method, params) {
   if (!attached || source.tabId !== tabId) return;
   if (method === 'Debugger.scriptParsed') {
     scanScript(source.sessionId ? { tabId, sessionId: source.sessionId } : DEBUGGEE, params);
+    return;
+  }
+  if (method === 'Debugger.paused') {
+    // Only tracing makes our session pause; the tracer records and always resumes.
+    const target = source.sessionId ? { tabId, sessionId: source.sessionId } : DEBUGGEE;
+    if (tracer) tracer.onPaused(target, params);
+    else cdp('Debugger.resume', {}, target).catch(() => {});
     return;
   }
   if (method === 'Runtime.bindingCalled' && params.name === BINDING) {
@@ -240,7 +251,7 @@ function opBadge(op) {
 }
 
 function isHidden(rec) {
-  return el('onlyCipher').checked && !CIPHER_OPS.has(rec.op) && rec.op !== 'scan' && rec.op !== 'unknown'; // findings always shown
+  return el('onlyCipher').checked && !CIPHER_OPS.has(rec.op) && rec.op !== 'scan' && rec.op !== 'unknown' && rec.op !== 'call'; // findings and traced calls always shown
 }
 
 function renderRow(rec) {
@@ -339,7 +350,10 @@ function renderDetail(rec) {
     ['apply (res)', rec.applyResponse ? { value: applyText(rec.applyResponse) + (rec.applyResponse.at ? '   @ ' + rec.applyResponse.at : '') } : null, ''],
     ['apply (ws)', rec.applyWebSocket ? { value: applyText(rec.applyWebSocket) + '   @ ' + rec.applyWebSocket.url + '  (Burp 미지원)' } : null, ''],
     ['site', rec.site && rec.site.url ? { value: rec.site.url + ':' + rec.site.line + ':' + rec.site.col } : null, ''],
+    ['candidates', rec.candidates && rec.candidates.length
+      ? { value: rec.candidates.map((c) => `${c.scope} ${c.name} = ${c.value.encoding}:${c.value.value}`).join('\n') } : null, ''],
   ];
+  if (rec.lib === 'traced') rows.push(['next', { value: 'Send to Burp 하면 서버가 위 후보로 알고리즘·키·IV를 판정합니다 (로드 결과 identified).' }, '']);
   if (rec.format) rows.splice(1, 0, ['format', { value: rec.format }, '']);
   // Skip the DOM rebuild when nothing changed (refreshApply runs every second; keeps text selection alive).
   const sig = rec.n + JSON.stringify(rows.map((r) => r[1] && r[1].value));
@@ -357,7 +371,7 @@ function renderDetail(rec) {
   const body = el('dBody');
   body.textContent = '';
   for (const [label, obj, cls] of rows) {
-    if (!obj && (label === 'format' || label.startsWith('apply'))) continue;
+    if (!obj && (label === 'format' || label === 'candidates' || label.startsWith('apply'))) continue;
     const k = document.createElement('div');
     k.className = 'k';
     k.textContent = label;
@@ -371,6 +385,26 @@ function renderDetail(rec) {
     v.className = has ? 'v' : 'v empty';
     v.textContent = has ? (cls === 'plain' ? pretty(obj.value) : String(obj.value)) : '—';
     body.append(k, v);
+  }
+  if (rec.op === 'unknown') {
+    // L3: trace the functions on this stack -- the next call records their input/output and key candidates.
+    const btn = document.createElement('button');
+    btn.textContent = rec.traceArmed ? '추적 중 — 같은 기능을 다시 실행하세요' : '이 함수들 추적 (다음 호출의 입력·출력·키 후보 기록)';
+    btn.disabled = !!rec.traceArmed || !tracer;
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        const armed = await tracer.traceFrames(DEBUGGEE, rec.origin.frames.slice(0, 4));
+        rec.traceArmed = true;
+        lastDetail = '';
+        renderDetail(rec);
+        setStatus('추적 시작: ' + armed.join(', ') + ' — 페이지에서 같은 기능을 다시 실행하세요');
+      } catch (e) {
+        btn.disabled = false;
+        setStatus('추적 실패: ' + e.message, true);
+      }
+    };
+    body.append(btn);
   }
 }
 

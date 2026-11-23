@@ -113,3 +113,13 @@ test('isExplained: the IV field of a captured call (ivApply) is explained too', 
   assert.equal(isExplained({ url: '/api/inquiry', loc: { in: 'header', name: 'X-Enc-IV' } }, records), true);
   assert.equal(isExplained({ url: '/api/other', loc: { in: 'header', name: 'X-Enc-IV' } }, records), false);
 });
+
+test('a pure encoding step (output == its input text) never takes the placement from the function that encrypted', () => {
+  const correlate = load();
+  const ct = 'NmRBWXJyWjE1bHEzWWhwbkpXQkk0VDE5';
+  const b64 = { lib: 'traced', op: 'call', fn: 'b64', input: { encoding: 'base64', value: ct }, output: { encoding: 'utf8', value: ct } };
+  const encSeed = { lib: 'traced', op: 'call', fn: 'encSeed', input: { encoding: 'utf8', value: '{"newPin":"5678"}' }, output: { encoding: 'utf8', value: ct } };
+  correlate({ lib: 'transport', op: 'fetch', url: '/api/card/pin', body: { kind: 'json', fields: [{ path: '$.encData', value: ct }] } }, [b64, encSeed]);
+  assert.equal(b64.apply, undefined);
+  assert.deepEqual({ ...encSeed.apply }, { in: 'json', path: '$.encData', at: '/api/card/pin' });
+});

@@ -675,5 +675,27 @@
     });
   } catch (_) { /* already defined */ }
 
+  // ---- value serializer for the tracer (tracer.js reads arguments / return values over CDP) ----
+  // string -> utf8, bytes (TypedArray/ArrayBuffer/byte array/CryptoJS WordArray) -> base64, else JSON.
+  const ser = (v) => {
+    try {
+      if (v == null) return null;
+      if (typeof v === 'string') return { encoding: 'utf8', value: v.length > 65536 ? v.slice(0, 65536) : v };
+      if (typeof v === 'number' || typeof v === 'boolean') return { encoding: 'json', value: String(v) };
+      if (v instanceof ArrayBuffer || ArrayBuffer.isView(v)) return enc(v);
+      if (Array.isArray(v) && v.length && v.length <= 65536 && v.every((x) => Number.isInteger(x) && x >= 0 && x <= 255)) return bytesEnc(v);
+      if (typeof v.sigBytes === 'number' && Array.isArray(v.words)) { // CryptoJS WordArray
+        const b = new Uint8Array(v.sigBytes);
+        for (let i = 0; i < v.sigBytes; i++) b[i] = (v.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+        return enc(b);
+      }
+      if (typeof v === 'function') return { encoding: 'type', value: 'function ' + (v.name || '') };
+      return { encoding: 'json', value: JSON.stringify(v).slice(0, 4096) };
+    } catch (_) {
+      return { encoding: 'type', value: Object.prototype.toString.call(v) };
+    }
+  };
+  try { Object.defineProperty(globalThis, '__ct_ser', { value: ser, enumerable: false }); } catch (_) {}
+
   globalThis.__cryptotrace_ready = true;
 })();

@@ -562,3 +562,64 @@ test('iv in a JSON field (sample B shape {iv, ct}) and in a header: decrypt + re
   assert.deepEqual(JSON.parse(rdec.response.body).ct, { ok: true }, JSON.stringify(rdec));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('SEED (built in: Node OpenSSL has none) matches KISA reference (kisa-seed) for CBC, and round-trips ECB/prefix IV', async () => {
+  const { createRequire } = await import('node:module');
+  const { KISA_SEED_CBC: K } = createRequire(import.meta.url)('../../samples/public/vendor/kisa-seed-1.1.0.js');
+  for (const plain of ['a', '0123456789abcdef', '카드 비밀번호 {"newPin":"5678"} '.repeat(3)]) {
+    const key = crypto.randomBytes(16), iv = crypto.randomBytes(16);
+    const m = Buffer.from(plain);
+    const ref = Buffer.from(K.SEED_CBC_Encrypt(key, iv, m, 0, m.length)).toString('base64');
+    const c = symmetricCipher({ alg: 'seed-cbc', iv: { value: iv.toString('hex'), encoding: 'hex' } }, key);
+    assert.equal(c.encrypt(plain), ref, 'same ciphertext as the KISA reference');
+    assert.equal(c.decrypt(ref), plain);
+  }
+  const ecb = symmetricCipher({ alg: 'seed-ecb' }, Buffer.alloc(16, 3));
+  assert.equal(ecb.decrypt(ecb.encrypt('ecb mode text')), 'ecb mode text');
+  const pre = symmetricCipher({ alg: 'seed-cbc', iv: { from: 'prefix', length: 16 }, outEncoding: 'hex' }, Buffer.alloc(16, 4));
+  assert.equal(pre.decrypt(pre.encrypt('prefix iv')), 'prefix iv');
+  const nopad = symmetricCipher({ alg: 'seed-cbc', padding: 'none', iv: { value: '00'.repeat(16), encoding: 'hex' } }, Buffer.alloc(16, 5));
+  assert.equal(nopad.decrypt(nopad.encrypt('exactly 16 bytes')), 'exactly 16 bytes');
+  assert.throws(() => symmetricCipher({ alg: 'seed-cbc', iv: { value: '00', encoding: 'hex' } }, Buffer.alloc(8)).encrypt('x'), /16-byte key/);
+});
+
+test('identify: a cipher spec with candidate algorithms/keys/IVs picks the one that reproduces the captured calls', async () => {
+  const { createRequire } = await import('node:module');
+  const { KISA_SEED_CBC: K } = createRequire(import.meta.url)('../../samples/public/vendor/kisa-seed-1.1.0.js');
+  const key = Buffer.from('ct-seed-key-0016'), iv = Buffer.from('ct-seed-iv--0016');
+  const seedB64 = (s) => { const m = Buffer.from(s); return Buffer.from(K.SEED_CBC_Encrypt(key, iv, m, 0, m.length)).toString('base64'); };
+  const plain = '{"oldPin":"1234","newPin":"5678"}';
+  const cfg = (vectors) => ({
+    schemaVersion: 1, profile: 'idf', scope: [{ host: 'api.test', pathRegex: '.*' }],
+    keys: { cand1: { source: 'static', value: 'WEB-8B448AC9', encoding: 'utf8' }, cand2: { source: 'static', value: 'ct-seed-key-0016', encoding: 'utf8' },
+      cand3: { source: 'static', value: 'ct-seed-iv--0016', encoding: 'utf8' } },
+    ciphers: { c1: { identify: { algs: ['aes-128-cbc', 'aria-128-cbc', 'seed-cbc', 'aes-128-ecb', 'seed-ecb'], keys: ['cand1', 'cand2', 'cand3'],
+      ivs: [{ value: 'WEB-8B448AC9', encoding: 'utf8' }, { value: 'ct-seed-key-0016', encoding: 'utf8' }, { value: 'ct-seed-iv--0016', encoding: 'utf8' }],
+      paddings: ['pkcs7', 'zero'], inEncoding: 'utf8', outEncoding: 'base64' } } },
+    apply: { request: [{ in: 'json', path: '$.encData', cipher: 'c1' }], response: [] }, integrity: [], selftest: vectors,
+  });
+  const loadCfg = (c) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-idf-'));
+    const file = path.join(dir, 'c.json');
+    fs.writeFileSync(file, JSON.stringify(c));
+    const eng = createEngine();
+    const res = eng.handle({ op: 'load', files: [file] }).results[0];
+    fs.rmSync(dir, { recursive: true, force: true });
+    return { eng, res };
+  };
+  const { eng, res } = loadCfg(cfg([{ cipher: 'c1', plain, ciphertext: seedB64(plain) }]));
+  assert.equal(res.error, undefined, res.error);
+  assert.deepEqual(res.identified, [{ cipher: 'c1', alg: 'seed-cbc', key: 'cand2', iv: { value: 'ct-seed-iv--0016', encoding: 'utf8' }, padding: 'pkcs7' }]);
+  assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }]);
+  const dec = eng.handle({ op: 'decryptRequest', host: 'api.test', port: 443,
+    request: { method: 'POST', path: '/api/card/pin', headers: [], body: JSON.stringify({ encData: seedB64('{"newPin":"0000"}') }) } });
+  assert.deepEqual(JSON.parse(dec.request.body).encData, { newPin: '0000' });
+
+  // nothing matches -> the profile still loads; that cipher reports it was not identified
+  const bad = loadCfg(cfg([{ cipher: 'c1', plain, ciphertext: Buffer.alloc(48, 1).toString('base64') }]));
+  assert.equal(bad.res.error, undefined, bad.res.error);
+  assert.match(bad.res.selftest[0].error, /not identified/);
+  const fail = bad.eng.handle({ op: 'decryptRequest', host: 'api.test', port: 443,
+    request: { method: 'POST', path: '/x', headers: [], body: JSON.stringify({ encData: 'AAAA' }) } });
+  assert.match(fail.applied[0].error, /not identified/);
+});

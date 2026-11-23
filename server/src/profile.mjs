@@ -4,6 +4,7 @@ import path from 'node:path';
 import { toBytes } from './encoding.mjs';
 import { symmetricCipher, rsaCipher, opensslPassphraseCipher, ecdhShared } from './cipher.mjs';
 import { deriveKey } from './kdf.mjs';
+import { identifyCipher } from './identify.mjs';
 import { loadCustomCipher, loadCustomSign } from './custom.mjs';
 import { parsePath } from './jsonpath.mjs';
 import { INTEGRITY_TYPES } from './integrity.mjs';
@@ -55,7 +56,14 @@ function pendingCipher(name, pendingKeys, keySpecs) {
   return { deterministic: false, pending: true, encrypt: err, decrypt: err };
 }
 
-function buildCipher(file, name, spec, store, keySpecs) {
+// A cipher to be identified from captured calls (identify.mjs) that no candidate reproduced: the profile still
+// loads; using this cipher reports why.
+function unidentifiedCipher(reason) {
+  const err = () => { throw new Error('cipher not identified: ' + reason); };
+  return { deterministic: false, pending: true, unidentified: reason, encrypt: err, decrypt: err };
+}
+
+function buildCipher(file, name, spec, store, keySpecs, vectors = []) {
   const pendingKeys = [];
   const keyOf = (ref) => {
     if (!ref) return null;
@@ -66,6 +74,12 @@ function buildCipher(file, name, spec, store, keySpecs) {
     }
     fail(file, `cipher "${name}": unknown key "${ref}"`);
   };
+  if (spec.identify) {
+    const found = identifyCipher(spec.identify, store, vectors.filter((v) => v.cipher === name));
+    if (!found.cipher) return unidentifiedCipher(found.reason);
+    found.cipher.identified = { cipher: name, ...found.chosen };
+    return found.cipher;
+  }
   if (spec.custom) {
     const modPath = path.resolve(path.dirname(file), spec.custom);
     return loadCustomCipher(modPath, spec, store);
@@ -194,7 +208,7 @@ export function loadProfile(file) {
     const ciphers = {};
     for (const [name, spec] of Object.entries(cipherSpecs)) {
       try {
-        ciphers[name] = buildCipher(file, name, spec, store, keySpecs);
+        ciphers[name] = buildCipher(file, name, spec, store, keySpecs, cfg.selftest || []);
       } catch (e) {
         fail(file, `cipher "${name}": ${e.message}`);
       }
@@ -207,6 +221,7 @@ export function loadProfile(file) {
   profile.response = validateRules(file, cfg.apply?.response, profile.ciphers);
   profile.integrity = validateIntegrity(file, cfg.integrity, store, keySpecs);
   profile.integrityResponse = validateIntegrity(file, cfg.integrityResponse, store, keySpecs);
+  profile.identified = Object.values(profile.ciphers).filter((c) => c.identified).map((c) => c.identified);
   profile.warnings = collectWarnings(profile.request, profile.response, profile.integrity, profile.integrityResponse);
 
   // Runtime key capture: store the bytes and rebuild so dependent ciphers become usable.
@@ -239,6 +254,7 @@ export function selftest(profile) {
   return profile.selftestVectors.map((v) => {
     const c = profile.ciphers[v.cipher];
     if (!c) return { cipher: v.cipher, ok: false, error: 'unknown cipher' };
+    if (c.unidentified) return { cipher: v.cipher, ok: false, error: 'not identified: ' + c.unidentified };
     if (c.pending) return { cipher: v.cipher, ok: false, error: 'session key not captured yet' };
     // A cipher whose IV sits in another field gets the vector's own iv for the decrypt check, and a scratch
     // field for the round-trip (encrypt writes a fresh IV there, decrypt reads it back).

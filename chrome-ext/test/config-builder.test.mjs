@@ -531,3 +531,40 @@ test('a WebSocket placement is noted, not turned into an HTTP apply rule', () =>
   assert.deepEqual(cfg.apply.request.length + cfg.apply.response.length, 0);
   assert.ok(cfg._notes.some((n) => /WebSocket wss:\/\/api\.shop\.test\/stream \$\.payload -> c1/.test(n)), JSON.stringify(cfg._notes));
 });
+
+test('traced page function (no known API) -> identify grid from its scope candidates; the server picks SEED-CBC', async () => {
+  const buildConfig = loadBuilder();
+  const { KISA_SEED_CBC: K } = require(path.join(HERE, '../../samples/public/vendor/kisa-seed-1.1.0.js'));
+  const key = Buffer.from('ct-seed-key-0016'), iv = Buffer.from('ct-seed-iv--0016');
+  const plain = '{"oldPin":"1234","newPin":"5678"}';
+  const m = Buffer.from(plain);
+  const ctBytes = Buffer.from(K.SEED_CBC_Encrypt(key, iv, m, 0, m.length));
+  const ct = ctBytes.toString('base64');
+  const site = { url: 'http://127.0.0.1:8088/app.js', line: 170, col: 1 };
+  const apply = { in: 'json', path: '$.encData', at: '/api/card/pin' };
+  const candidates = [
+    { name: 'DEVICE_ID', scope: 'script', value: { encoding: 'utf8', value: 'WEB-8B448AC9' } },
+    { name: 'SEED_KEY', scope: 'script', value: { encoding: 'base64', value: b64(key) } },
+    { name: 'SEED_IV', scope: 'script', value: { encoding: 'base64', value: b64(iv) } },
+  ];
+  // what tracer.js emits, in return order: the base64 helper, the site's encrypt function, the click handler
+  const records = [
+    { lib: 'traced', op: 'call', fn: 'b64', args: [{ encoding: 'base64', value: ct }], input: { encoding: 'base64', value: ct },
+      output: { encoding: 'utf8', value: ct }, candidates: [], site, apply: { ...apply }, frame: 'http://127.0.0.1:8088/' },
+    { lib: 'traced', op: 'call', fn: 'encSeed', args: [{ encoding: 'utf8', value: plain }], input: { encoding: 'utf8', value: plain },
+      output: { encoding: 'utf8', value: ct }, candidates, site, apply: { ...apply }, frame: 'http://127.0.0.1:8088/' },
+    { lib: 'traced', op: 'call', fn: '$.onclick', args: [null], input: null, output: { encoding: 'json', value: '{}' }, candidates: [], site },
+  ];
+  const cfg = buildConfig(records);
+  assert.equal(Object.keys(cfg.ciphers).length, 1, 'only encSeed defines a cipher (b64 is just an encoder)');
+  const c = cfg.ciphers.c1;
+  assert.ok(c.identify && c.identify.algs.includes('seed-cbc'), JSON.stringify(c));
+  assert.match(c._note, /encSeed/);
+  assert.equal(JSON.stringify(cfg.apply.request), JSON.stringify([{ in: 'json', path: '$.encData', cipher: 'c1' }]));
+  assert.equal(JSON.stringify(cfg.selftest.map((v) => v.plain)), JSON.stringify([plain]));
+  const res = loadIntoEngine(cfg);
+  assert.equal(res.error, undefined, res.error);
+  assert.equal(res.identified[0].alg, 'seed-cbc');
+  assert.equal(cfg.keys[res.identified[0].key].value, b64(key));
+  assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }]);
+});

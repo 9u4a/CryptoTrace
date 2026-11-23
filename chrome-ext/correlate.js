@@ -117,7 +117,7 @@
       let best = null, bestExtra = null;
       for (const r of candidates) {
         const extra = placeIn(slot.value, r, key);
-        if (extra && (!best || r[key].value.length > best[key].value.length)) { best = r; bestExtra = extra; }
+        if (extra && (!best || r[key].value.length >= best[key].value.length)) { best = r; bestExtra = extra; }
       }
       if (!best) continue;
       best[prop] = { ...slot.loc, at, ...bestExtra, ...extra };
@@ -131,7 +131,8 @@
       const decs = records.filter((r) => r.op === 'decrypt' && r.input && r.input.value).slice(-80);
       return place(t, decs, 'input', 'applyResponse');
     }
-    const outs = records.filter((r) => r.output && r.output.value && r.lib !== 'transport').slice(-80);
+    // a pure encoding step (a traced base64 helper: output text == input text) explains nothing -- skip it
+    const outs = records.filter((r) => r.output && r.output.value && r.lib !== 'transport' && !(r.input && r.input.value === r.output.value)).slice(-80);
     // A WebSocket message is not an HTTP request: keep its placement apart so it never becomes an apply rule.
     if (t.op === 'websocket') return place(t, outs, 'output', 'applyWebSocket', { url: t.url });
     place(t, outs, 'output', 'apply');
