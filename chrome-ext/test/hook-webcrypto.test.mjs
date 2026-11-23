@@ -128,3 +128,10 @@ test('unwrapKey records the unwrapped key bytes; wrapKey/exportKey are recorded'
   await subtle().exportKey('raw', inner);
   assert.equal(last('exportKey').key.value, b64(KEY));
 });
+
+test('AES-CTR records its counter block as the IV', async () => {
+  const k = await subtle().importKey('raw', KEY.subarray(0, 16), 'AES-CTR', false, ['encrypt']);
+  const counter = new Uint8Array(16).fill(7);
+  await subtle().encrypt({ name: 'AES-CTR', counter, length: 64 }, k, new TextEncoder().encode('ctr'));
+  assert.equal(last('encrypt').iv.value, b64(counter));
+});

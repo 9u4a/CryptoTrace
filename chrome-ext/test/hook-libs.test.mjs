@@ -86,8 +86,8 @@ test('forge AES-CBC cipher is captured through start/update/finish', () => {
   const enc = last('forge', 'encrypt');
   assert.ok(enc, 'encrypt captured');
   assert.equal(enc.alg.name, 'AES-CBC');
-  assert.equal(enc.input.value, 'secret message');
-  assert.ok(enc.iv && enc.iv.value === iv, 'iv captured');
+  assert.deepEqual({ ...enc.input }, { encoding: 'base64', value: Buffer.from('secret message').toString('base64') });
+  assert.ok(enc.iv && enc.iv.value === Buffer.from(iv, 'latin1').toString('base64'), 'iv captured');
   assert.ok(last('forge', 'decrypt'), 'decrypt captured');
 });
 
@@ -189,4 +189,41 @@ test('Node-crypto API in a webpack module (crypto-browserify polyfill shape) is 
   dd.update(Buffer.from(ct, 'base64'));
   dd.final();
   assert.equal(last('nodecrypto', 'decrypt').autoPadding, false);
+});
+
+test('crypto-js: mode and padding are recognised by object identity; ciphertext recorded as base64', () => {
+  const C = globalThis.CryptoJS;
+  const K = C.enc.Utf8.parse('cov-ecb-key-0016');
+  C.AES.encrypt('ecb text', K, { mode: C.mode.ECB, padding: C.pad.Pkcs7 });
+  let r = last('cryptojs', 'encrypt');
+  assert.equal(r.mode, 'ECB');
+  assert.equal(r.padding, 'Pkcs7');
+  assert.equal(r.output.encoding, 'base64');
+  C.AES.encrypt('zero padded', K, { iv: K, mode: C.mode.CBC, padding: C.pad.ZeroPadding });
+  r = last('cryptojs', 'encrypt');
+  assert.equal(r.mode, 'CBC');
+  assert.equal(r.padding, 'ZeroPadding');
+  const ct = C.AES.encrypt('ctr', K, { iv: K, mode: C.mode.CTR, padding: C.pad.NoPadding }).toString();
+  r = last('cryptojs', 'encrypt');
+  assert.equal(r.mode, 'CTR');
+  C.AES.decrypt(ct, K, { iv: K, mode: C.mode.CTR, padding: C.pad.NoPadding });
+  const d = last('cryptojs', 'decrypt');
+  assert.equal(d.mode, 'CTR');
+  assert.equal(d.input.encoding, 'base64');
+});
+
+test('JSEncrypt: the key set with setPublicKey(PEM) is captured (as n/e) with each encrypt', () => {
+  globalThis.window = globalThis;
+  vm.runInThisContext(read('jsencrypt-3.3.2.min.js'), { filename: 'jsencrypt.js' });
+  delete globalThis.window;
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
+  const j = new globalThis.JSEncrypt();
+  j.setPublicKey(publicKey.export({ type: 'spki', format: 'pem' }));
+  const ct = j.encrypt('jsencrypt secret');
+  assert.equal(crypto.privateDecrypt({ key: privateKey, padding: crypto.constants.RSA_PKCS1_PADDING }, Buffer.from(ct, 'base64')).toString(), 'jsencrypt secret');
+  const r = last('jsencrypt', 'encrypt');
+  assert.ok(r && r.key && r.key.encoding === 'rsa-hex', JSON.stringify(r && r.key));
+  const jwk = publicKey.export({ format: 'jwk' });
+  assert.equal(BigInt('0x' + JSON.parse(r.key.value).n), BigInt('0x' + Buffer.from(jwk.n, 'base64url').toString('hex')));
+  assert.equal(r.output.encoding, 'base64');
 });

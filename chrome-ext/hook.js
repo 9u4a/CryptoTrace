@@ -230,7 +230,7 @@
         return orig.apply(this, arguments).then(async (out) => {
           send({
             lib: 'webcrypto', op, alg: algParams(alg),
-            iv: alg && alg.iv ? enc(alg.iv) : null,
+            iv: alg && (alg.iv || alg.counter) ? enc(alg.iv || alg.counter) : null, // AES-CTR's counter block = the OpenSSL CTR IV
             key: await infoOf(key), // a key we never saw created (e.g. from IndexedDB) is read now if extractable
             keySource: (keyInfo.get(key) || {}).source || null, // generateKey = random per use, not a fixed key
             input: enc(data),
@@ -278,6 +278,12 @@
         return out;
       });
     }
+    // CryptoJS modes/paddings are plain objects without a name: recognise them by identity.
+    const nameIn = (table, v, names) => { if (!v || !table) return undefined; for (const n of names) if (table[n] === v) return n; return v.name; };
+    const modeOf = (cfg) => nameIn(C.mode, cfg && cfg.mode, ['CBC', 'ECB', 'CFB', 'OFB', 'CTR', 'CTRGladman']);
+    const padOf = (cfg) => nameIn(C.pad, cfg && cfg.padding, ['Pkcs7', 'NoPadding', 'ZeroPadding', 'Iso10126', 'Iso97971', 'AnsiX923']);
+    // A CipherParams prints as base64 (OpenSSL format): label it so, so byte-level matching (hex re-encoding) works.
+    const ctText = (v) => { const s = text(v); return { encoding: /^[A-Za-z0-9+/]+={0,2}$/.test(s) ? 'base64' : 'cryptojs', value: s }; };
     for (const algName of ['AES', 'DES', 'TripleDES', 'Rabbit', 'RC4', 'RC4Drop']) {
       const algo = C[algName];
       if (!algo || typeof algo.encrypt !== 'function') continue;
@@ -285,15 +291,16 @@
         const out = orig.apply(this, arguments);
         send({ lib: 'cryptojs', op: 'encrypt', alg: { name: algName }, key: { encoding: 'cryptojs', value: text(key) },
           iv: cfg && cfg.iv ? { encoding: 'cryptojs', value: text(cfg.iv) } : null,
-          mode: cfg && cfg.mode && cfg.mode.name, padding: cfg && cfg.padding && cfg.padding.name,
-          input: waText(C, message), output: { encoding: 'cryptojs', value: text(out) }, site: site() });
+          mode: modeOf(cfg), padding: padOf(cfg),
+          input: waText(C, message), output: ctText(out), site: site() });
         return out;
       });
       wrap(algo, 'decrypt', (orig) => function (ciphertext, key, cfg) {
         const out = orig.apply(this, arguments);
         send({ lib: 'cryptojs', op: 'decrypt', alg: { name: algName }, key: { encoding: 'cryptojs', value: text(key) },
           iv: cfg && cfg.iv ? { encoding: 'cryptojs', value: text(cfg.iv) } : null,
-          input: { encoding: 'cryptojs', value: text(ciphertext) }, output: waText(C, out), site: site() });
+          mode: modeOf(cfg), padding: padOf(cfg),
+          input: ctText(ciphertext), output: waText(C, out), site: site() });
         return out;
       });
     }
@@ -345,7 +352,9 @@
   // node-forge: forge.cipher.createCipher/createDecipher(algorithm, key) -> streaming cipher.
   // Wrap the returned object's start/update/finish to capture iv, accumulated input and output.
   // forge ByteBuffers carry their raw bytes in `.data` (a binary/latin1 string).
-  const forgeBytes = (v) => (v && v.data != null ? v.data : v == null ? '' : String(v));
+  const forgeBytes = (v) => (v && typeof v.bytes === 'function' ? v.bytes() : v && v.data != null ? v.data : v == null ? '' : String(v));
+  // forge byte strings (one char per byte) -> base64, so byte-level matching and the config builder can read them
+  const binB64 = (s) => { try { return { encoding: 'base64', value: btoa(s) }; } catch (_) { return { encoding: 'latin1', value: s }; } };
   const installForge = (F) => {
     if (!F || F.__ct_wrapped || !F.cipher || typeof F.cipher.createCipher !== 'function') return;
     F.__ct_wrapped = true;
@@ -359,9 +368,9 @@
         cipher.update = function (buf) { try { chunks.push(forgeBytes(buf)); } catch (_) {} return oUpdate.apply(this, arguments); };
         cipher.finish = function () {
           const r = oFinish.apply(this, arguments);
-          send({ lib: 'forge', op, alg: { name: String(algorithm) }, key: { encoding: 'latin1', value: forgeBytes(key) },
-            iv: iv != null ? { encoding: 'latin1', value: iv } : null,
-            input: { encoding: 'latin1', value: chunks.join('') }, output: { encoding: 'latin1', value: forgeBytes(this.output) }, site: site() });
+          send({ lib: 'forge', op, alg: { name: String(algorithm) }, key: binB64(forgeBytes(key)),
+            iv: iv != null ? binB64(iv) : null,
+            input: binB64(chunks.join('')), output: binB64(forgeBytes(this.output)), site: site() });
           return r;
         };
       } catch (_) { /* leave the cipher usable even if wrapping fails */ }
@@ -607,16 +616,25 @@
   }, 300);
 
   // JSEncrypt (RSA)
+  // JSEncrypt bundles jsbn: its key (getKey()) holds n/e (+ private fields) as BigIntegers, read like jsbn's.
+  // Ciphertext is base64 (PKCS#1 v1.5).
   trapGlobal('JSEncrypt', (J) => {
     const proto = J && J.prototype;
-    for (const op of ['encrypt', 'decrypt']) {
-      wrap(proto, op, (orig) => function (str) {
-        const out = orig.apply(this, arguments);
-        send({ lib: 'jsencrypt', op, alg: { name: 'RSA' }, input: { encoding: 'utf8', value: text(str) },
-          output: out ? { encoding: 'utf8', value: text(out) } : null, site: site() });
-        return out;
-      });
-    }
+    const keyOf = (self) => { try { const k = typeof self.getKey === 'function' ? self.getKey() : self.key; return k && k.n ? jsbnKey(k) : null; } catch (_) { return null; } };
+    wrap(proto, 'encrypt', (orig) => function (str) {
+      const where = site();
+      const out = orig.apply(this, arguments);
+      send({ lib: 'jsencrypt', op: 'encrypt', alg: { name: 'RSA', padding: 'pkcs1' }, key: keyOf(this), input: { encoding: 'utf8', value: text(str) },
+        output: out ? { encoding: 'base64', value: text(out) } : null, site: where });
+      return out;
+    });
+    wrap(proto, 'decrypt', (orig) => function (str) {
+      const where = site();
+      const out = orig.apply(this, arguments);
+      send({ lib: 'jsencrypt', op: 'decrypt', alg: { name: 'RSA', padding: 'pkcs1' }, key: keyOf(this), input: { encoding: 'base64', value: text(str) },
+        output: out ? { encoding: 'utf8', value: text(out) } : null, site: where });
+      return out;
+    });
   });
 
   // ---- encoding sinks: where an unexplained ciphertext became text --------

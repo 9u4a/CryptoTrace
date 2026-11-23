@@ -568,3 +568,17 @@ test('traced page function (no known API) -> identify grid from its scope candid
   assert.equal(cfg.keys[res.identified[0].key].value, b64(key));
   assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }]);
 });
+
+test('node-forge records (base64 bytes) -> cipher from the forge algorithm name; self-tests', () => {
+  const buildConfig = loadBuilder();
+  const key = Buffer.from('cov-forge-key-16'), iv = Buffer.from('cov-forge-iv--16');
+  const c = crypto.createCipheriv('aes-128-cbc', key, iv);
+  const ct = Buffer.concat([c.update('forge text'), c.final()]);
+  const cfg = buildConfig([{ lib: 'forge', op: 'encrypt', alg: { name: 'AES-CBC' }, key: { encoding: 'base64', value: b64(key) },
+    iv: { encoding: 'base64', value: b64(iv) }, input: { encoding: 'base64', value: b64(Buffer.from('forge text')) },
+    output: { encoding: 'base64', value: b64(ct) }, frame: 'https://api.shop.test/' }]);
+  assert.equal(cfg.ciphers.c1.alg, 'aes-128-cbc');
+  const res = loadIntoEngine(cfg);
+  assert.equal(res.error, undefined, res.error);
+  assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }]);
+});

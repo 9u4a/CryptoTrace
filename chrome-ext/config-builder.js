@@ -45,7 +45,8 @@
     // Honor the captured block mode instead of forcing CBC (hook.js records cfg.mode.name).
     const mode = String(rec.mode || 'CBC').toLowerCase();
     const modeOk = ['cbc', 'cfb', 'ofb', 'ctr', 'ecb', 'gcm'].includes(mode) ? mode : 'cbc';
-    const padding = (rec.padding || 'Pkcs7').toLowerCase().includes('pkcs') ? 'pkcs7' : 'none';
+    const pad = String(rec.padding || 'Pkcs7').toLowerCase();
+    const padding = pad.includes('pkcs') ? 'pkcs7' : pad.includes('zero') ? 'zero' : 'none';
     if (name === 'DES') return { alg: `des-${modeOk === 'ecb' ? 'ecb' : 'cbc'}`, padding, ...io };
     if (name === 'TripleDES') return { alg: `des-ede3-${modeOk === 'ecb' ? 'ecb' : 'cbc'}`, padding, ...io };
     const spec = { alg: `aes-${aesBits(keyBytes)}-${modeOk}`, ...io }; // WordArray key + explicit IV
@@ -169,6 +170,19 @@
     if (r.tag) spec._note = 'GCM: the selftest assumes the tag follows the ciphertext -- check how the page sends it';
     return spec;
   }
+  // node-forge: createCipher('AES-CBC' | 'AES-ECB' | 'AES-CTR' | '3DES-CBC' ..., key). Bytes arrive base64;
+  // forge pads CBC/ECB with PKCS#7 itself.
+  function forgeAlg(r, keyBytes) {
+    const m = String((r.alg && r.alg.name) || '').toUpperCase().match(/^(AES|3DES|DES)-(CBC|ECB|CTR|CFB|OFB|GCM)$/);
+    if (!m) return null;
+    const mode = m[2].toLowerCase();
+    const alg = m[1] === 'AES' ? `aes-${aesBits(keyBytes)}-${mode}` : m[1] === '3DES' ? `des-ede3-${mode}` : `des-${mode}`;
+    const spec = { alg, inEncoding: 'utf8', outEncoding: 'base64' };
+    if (mode === 'cbc' || mode === 'ecb') spec.padding = 'pkcs7';
+    if (mode === 'gcm') spec._note = 'forge GCM: the tag is read separately (cipher.mode.tag) -- check how the page sends it';
+    return spec;
+  }
+
   // A traced page function (tracer.js): its algorithm is unknown, so the cipher becomes an `identify` grid --
   // every block cipher that fits the byte-sized values found in its scopes -- and the server keeps the
   // combination that reproduces the captured calls (server/src/identify.mjs).
@@ -281,9 +295,10 @@
       const keyBytes = keyByteLen(r.key);
       if (r.lib === 'webcrypto') spec = webcryptoAlg(r.alg, keyBytes);
       else if (r.lib === 'cryptojs') spec = cryptojsAlg(r, keyBytes);
-      else if (r.lib === 'jsencrypt') spec = { alg: 'rsa', padding: 'pkcs1' };
+      else if (r.lib === 'jsencrypt') spec = { alg: 'rsa', padding: 'pkcs1', inEncoding: 'utf8', outEncoding: 'base64' };
       else if (r.lib === 'aesjs') spec = aesjsAlg(r, keyBytes);
       else if (r.lib === 'nodecrypto') spec = nodecryptoAlg(r);
+      else if (r.lib === 'forge') spec = forgeAlg(r, keyBytes);
       else if (r.lib === 'traced') spec = tracedSpec(r);
       else if (r.lib === 'jsbn') spec = { alg: 'rsa', padding: 'pkcs1', inEncoding: 'utf8', outEncoding: 'hex' };
       if (!spec) continue;
@@ -337,7 +352,7 @@
               ? { source: 'static', value: String(r.key.value), encoding: 'utf8' }
               : { source: 'static', value: String(r.key.value), encoding: 'base64' };
             spec[r.op === 'decrypt' ? 'privateKey' : 'publicKey'] = keyNameFor(entry);
-          } else if (r.lib === 'jsbn' && r.key && r.key.encoding === 'rsa-hex') {
+          } else if ((r.lib === 'jsbn' || r.lib === 'jsencrypt') && r.key && r.key.encoding === 'rsa-hex') {
             // jsbn keeps n/e (and with setPrivateEx d + CRT params) as hex: rebuild them as JWK, which the
             // server loads directly. A JWK private key needs every CRT field; with only n/e/d it stays public.
             const k = JSON.parse(String(r.key.value));
