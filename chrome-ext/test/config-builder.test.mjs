@@ -634,3 +634,18 @@ test('the same location at two endpoints with different keys -> two ciphers, eac
   assert.equal(shared.apply.response.length, 1);
   assert.equal(shared.apply.response[0].pathRegex, undefined);
 });
+
+test('a traced function that is not a standard cipher falls back to the browser oracle (oracleKey)', () => {
+  const buildConfig = loadBuilder();
+  const scramble = (t) => Buffer.from(Buffer.from(t).map((x, i) => x ^ ((0x5a + i) & 0xff))).toString('base64');
+  const plain = '{"t":"cov-xor-1"}';
+  const cfg = buildConfig([{ lib: 'traced', op: 'call', fn: 'scramble', input: { encoding: 'utf8', value: plain },
+    output: { encoding: 'utf8', value: scramble(plain) }, candidates: [], site: { url: 'http://127.0.0.1:8089/cov/x', line: 3, col: 7 },
+    frame: 'http://127.0.0.1:8089/cov/x', oracleKey: 'scramble@http://127.0.0.1:8089/cov/x:3:7',
+    apply: { in: 'json', path: '$.z', at: '/cov/x/api' } }]);
+  const c = JSON.parse(JSON.stringify(cfg.ciphers.c1));
+  assert.deepEqual(c.oracle, { fn: 'scramble@http://127.0.0.1:8089/cov/x:3:7', frame: 'http://127.0.0.1:8089/cov/x' });
+  const res = loadIntoEngine(cfg);
+  assert.equal(res.error, undefined, res.error);
+  assert.deepEqual(JSON.parse(JSON.stringify(res.oracles)), [{ cipher: 'c1', fn: 'scramble@http://127.0.0.1:8089/cov/x:3:7' }]);
+});

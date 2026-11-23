@@ -354,8 +354,8 @@ export const CASES = [
     decrypt: (req) => aes('aes-256-cbc', Buffer.from('cov-wa-key-0123456789abcdef01234'), Buffer.from('cov-wa-iv--01234'), b64(req.json().s)),
   },
   {
-    id: 'xor-custom', group: 'no-api', title: 'Home-made XOR + base64 "encryption" (no standard algorithm)', expect: 'locate',
-    note: 'not a standard cipher: re-implementation needs a custom module or the L4 oracle',
+    id: 'xor-custom', group: 'no-api', title: 'Home-made XOR + base64 "encryption" (no standard algorithm)', expect: 'encrypt-only',
+    note: 'not a standard cipher: the page function itself re-encrypts edits (L4 oracle); the plaintext of captured traffic is not shown',
     client() {
       function scramble(text) { const b = new TextEncoder().encode(text); return btoa(String.fromCharCode(...b.map((x, i) => x ^ (0x5a + i) & 0xff))); }
       window.__run = async (plain) => {

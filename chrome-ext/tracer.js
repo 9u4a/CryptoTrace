@@ -104,6 +104,29 @@
       return a.concat(b.filter((c) => !seen.has(c.value.encoding + ':' + c.value.value)));
     };
 
+    // Register the paused function under `key` in globalThis.__ct_fns ({f, self}); true when it worked.
+    async function register(t, cf, name, loc, key) {
+      const id = String(name || '').split('.').pop();
+      if (!/^[A-Za-z_$][\w$]*$/.test(id) || id === 'anonymous') return false;
+      const q = JSON.stringify(id);
+      for (const expr of [`(typeof ${id} === 'function' ? ${id} : undefined)`, `(this && typeof this[${q}] === 'function' ? this[${q}] : undefined)`]) {
+        try {
+          const r = await cdp('Debugger.evaluateOnCallFrame', { callFrameId: cf.callFrameId, expression: expr, silent: true }, t);
+          const obj = r.result;
+          if (!obj || !obj.objectId) continue;
+          const props = await cdp('Runtime.getProperties', { objectId: obj.objectId, ownProperties: true }, t);
+          const fl = (props.internalProperties || []).find((p) => p.name === '[[FunctionLocation]]');
+          const at = fl && fl.value && fl.value.value;
+          if (!at || at.scriptId !== loc.scriptId || at.lineNumber !== loc.lineNumber || at.columnNumber !== loc.columnNumber) continue;
+          const save = `(() => { const reg = globalThis.__ct_fns || Object.defineProperty(globalThis, '__ct_fns', { value: {}, enumerable: false }).__ct_fns;`
+            + ` reg[${JSON.stringify(key)}] = { f: ${expr}, self: this }; return true; })()`;
+          const ok = await cdp('Debugger.evaluateOnCallFrame', { callFrameId: cf.callFrameId, expression: save, returnByValue: true, silent: true }, t);
+          if (ok.result && ok.result.value === true) return true;
+        } catch (_) { /* not reachable this way */ }
+      }
+      return false;
+    }
+
     // First hit inside a function: learn its range, break at its entry and every return point.
     async function arm(t, s, cf, bp, id) {
       await cdp('Debugger.removeBreakpoint', { breakpointId: id }, t).catch(() => {});
@@ -131,6 +154,11 @@
         const r = await cdp('Debugger.evaluateOnCallFrame', { callFrameId: cf.callFrameId, expression: 'location.href', returnByValue: true, silent: true }, t);
         fn.frame = r.result && typeof r.result.value === 'string' ? r.result.value : '';
       } catch (_) { fn.frame = ''; }
+      // L4 oracle: keep a reference to this very function in the page, so it can later be called with an edited
+      // plaintext (custom ciphers / keys we can't hold). Found by its name (in its own scope) or on `this`, and
+      // accepted only if its [[FunctionLocation]] is this function's.
+      fn.oracleKey = `${fn.name}@${fn.url || ''}:${fn.line}:${fn.col}`;
+      fn.oracleReady = await register(t, cf, fn.name, loc, fn.oracleKey);
       // the call in flight is already past its entry: take its arguments now
       fn.candidates = await candidatesOf(t, cf);
       fn.stack.push({ args: await argsOf(t, cf) });
@@ -156,7 +184,8 @@
       const args = call.args || [];
       const input = args.find((a) => a && (a.encoding === 'utf8' || a.encoding === 'base64')) || null;
       emit({ lib: 'traced', op: 'call', fn: fn.name, alg: { name: fn.name + '()' }, args, input, output: ret,
-        candidates: fn.candidates || [], site: { url: fn.url, line: fn.line, col: fn.col }, frame: fn.frame || '' });
+        candidates: fn.candidates || [], site: { url: fn.url, line: fn.line, col: fn.col }, frame: fn.frame || '',
+        oracleKey: fn.oracleReady ? fn.oracleKey : null }, t);
     }
 
     const ORDER = { callsite: 0, entry: 1, return: 2 };
@@ -227,5 +256,14 @@
     };
   }
 
-  window.CryptoTraceTracer = { createTracer };
+  /** Runtime.evaluate expression (awaitPromise, returnByValue) that calls a registered page function with one
+   * plaintext argument and returns its result as a string -- the browser side of an oracle job. */
+  function oracleExpression(key, value) {
+    return `(async () => { const e = globalThis.__ct_fns && globalThis.__ct_fns[${JSON.stringify(key)}];`
+      + ` if (!e) throw new Error('page function not registered (page reloaded? trace it again)');`
+      + ` const r = await e.f.call(e.self, ${JSON.stringify(String(value))});`
+      + ` return typeof r === 'string' ? r : JSON.stringify(r); })()`;
+  }
+
+  window.CryptoTraceTracer = { createTracer, oracleExpression };
 })();

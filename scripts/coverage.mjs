@@ -46,7 +46,7 @@ async function runCase(browser, c) {
   const P = (n) => `{"t":"cov-${id}-${n}"}`;
   const mods = panelModules();
   const tab = await browser.open(`${base}/cov/${id}`);
-  const tracer = mods.CryptoTraceTracer.createTracer({ cdp: (m, p, t) => browser.cdp(m, p, t), emit: (r) => tab.records.push(r), keyOf: (t) => t,
+  const tracer = mods.CryptoTraceTracer.createTracer({ cdp: (m, p, t) => browser.cdp(m, p, t), emit: (r, t) => { r.__session = t; tab.records.push(r); }, keyOf: (t) => t,
     scriptsOf: (t) => tab.parsed.filter((p) => (p.__session || tab.s) === t) });
   tab.listeners.push((m) => { if (m.method === 'Debugger.paused') tracer.onPaused(m.sessionId, m.params); }); // page or worker session
   const tracedSessions = new Set();
@@ -120,8 +120,18 @@ async function runCase(browser, c) {
       edited = { ...dec.request, body: dec.request.body.replace(/ct-keep(:|%3A)[A-Za-z0-9+/=_%-]+/i, val) };
     }
     let reencOk = false;
+    let usedOracle = false;
     if (edited) {
-      const enc = eng.handle({ op: 'encryptRequest', host: '127.0.0.1', port, request: edited });
+      // Burp + bridge + panel stand-in for the L4 oracle: run the registered page function in its tab/worker
+      const oracleCall = async (job) => {
+        const owner = tab.records.find((r) => r.lib === 'traced' && r.oracleKey === job.fn);
+        const res = await browser.cdp('Runtime.evaluate', { expression: mods.CryptoTraceTracer.oracleExpression(job.fn, job.value),
+          awaitPromise: true, returnByValue: true }, (owner && owner.__session) || tab.s);
+        if (res.exceptionDetails) throw new Error((res.exceptionDetails.exception && res.exceptionDetails.exception.description) || 'page function threw');
+        usedOracle = true;
+        return res.result.value;
+      };
+      const enc = await eng.handleAsync({ op: 'encryptRequest', host: '127.0.0.1', port, request: edited }, oracleCall);
       const failed = (enc.applied || []).filter((a) => !a.ok);
       if (failed.length) out.notes.push('re-encrypt: ' + failed.map((a) => a.where + ' ' + a.error).join('; '));
       const headers = Object.fromEntries(enc.request.headers.filter(([k]) => /^(content-type|cookie|x-)/i.test(k)));
@@ -149,7 +159,8 @@ async function runCase(browser, c) {
     else if (unknownLeft.length || traced || hooked || unk.length) out.status = 'locate';
     else if (out.scan.length) out.status = 'scan-only';
     else out.status = 'none';
-    out.detail = { hooked, traced, decryptOk, reencOk, unknown: unknownLeft.length };
+    if (usedOracle) out.notes.push('re-encrypted by the page function (oracle)');
+    out.detail = { hooked, traced, decryptOk, reencOk, unknown: unknownLeft.length, oracle: usedOracle };
   } catch (e) {
     out.status = 'error';
     out.notes.push(e.message);

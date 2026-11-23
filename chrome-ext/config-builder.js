@@ -210,8 +210,12 @@
       if (n === 16) algs.push('seed-cbc', 'seed-ecb');
     }
     const where = r.site ? `${String(r.site.url).split('/').pop()}:${r.site.line}` : '';
-    return { identify: { algs, keys: [], ivs: [], paddings: ['pkcs7', 'zero', 'none'], inEncoding: 'utf8', outEncoding }, _traced: true,
+    const spec = { identify: { algs, keys: [], ivs: [], paddings: ['pkcs7', 'zero', 'none'], inEncoding: 'utf8', outEncoding }, _traced: true,
       _note: `traced ${r.fn}() ${where}: algorithm/key/IV chosen by the server from scope candidates (see load result "identified")` };
+    // Not a standard cipher (or the key isn't reachable)? The server falls back to calling the page's own function
+    // through Burp and the panel (L4 oracle) -- re-encryption only, needs "Browser oracle" on in Burp.
+    if (r.oracleKey) spec.oracle = { fn: r.oracleKey, frame: r.frame || '' };
+    return spec;
   }
 
   // Plaintext text for a selftest vector: aes-js plaintext still carries the page's PKCS#7 padding.
