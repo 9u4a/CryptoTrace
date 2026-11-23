@@ -370,6 +370,38 @@
     wrapFactory('createDecipher', 'decrypt');
   };
 
+  // jsbn (Tom Wu's rsa.js): `new RSAKey(); setPublic(nHex, eHex); encrypt(text)` -> PKCS#1 v1.5 hex.
+  // Very common on Korean banking/public sites. The key lives on the instance as BigIntegers, so it is
+  // read at call time and recorded as hex fields ({n, e[, d, p, q, dmp1, dmq1, coeff]}).
+  const mark = (o) => { try { Object.defineProperty(o, '__ct_wrapped', { value: true }); } catch (_) {} };
+  const jsbnKey = (k) => {
+    const h = (b) => (b && typeof b.toString === 'function' ? b.toString(16) : null);
+    const o = { n: h(k && k.n), e: k && typeof k.e === 'number' ? k.e.toString(16) : null };
+    if (k && k.d) Object.assign(o, { d: h(k.d), p: h(k.p), q: h(k.q), dmp1: h(k.dmp1), dmq1: h(k.dmq1), coeff: h(k.coeff) });
+    return { encoding: 'rsa-hex', value: JSON.stringify(o) };
+  };
+  const isRSAKey = (R) => typeof R === 'function' && R.prototype && typeof R.prototype.encrypt === 'function'
+    && typeof R.prototype.setPublic === 'function';
+  const installJsbnRSA = (R) => {
+    if (!isRSAKey(R) || R.prototype.__ct_wrapped) return;
+    const P = R.prototype;
+    mark(P);
+    wrap(P, 'encrypt', (orig) => function (msg) {
+      const where = site();
+      const out = orig.apply(this, arguments);
+      send({ lib: 'jsbn', op: 'encrypt', alg: { name: 'RSA', padding: 'pkcs1' }, key: jsbnKey(this),
+        input: { encoding: 'utf8', value: text(msg) }, output: out == null ? null : { encoding: 'hex', value: String(out) }, site: where });
+      return out;
+    });
+    wrap(P, 'decrypt', (orig) => function (ctext) { // rsa2.js, when included
+      const where = site();
+      const out = orig.apply(this, arguments);
+      send({ lib: 'jsbn', op: 'decrypt', alg: { name: 'RSA', padding: 'pkcs1' }, key: jsbnKey(this),
+        input: { encoding: 'hex', value: text(ctext) }, output: out == null ? null : { encoding: 'utf8', value: String(out) }, site: where });
+      return out;
+    });
+  };
+
   // Object-exporting crypto libraries. To add one: write an installer above and append
   // { name, detect, install } here — it is then hooked both as a global and inside webpack bundles.
   const isCryptoJS = (x) => x && x.AES && typeof x.AES.encrypt === 'function' && x.enc && x.lib;
@@ -379,15 +411,28 @@
     { name: 'CryptoJS', detect: isCryptoJS, install: installCryptoJS },
     { name: 'sjcl', detect: isSjcl, install: installSjcl },
     { name: 'forge', detect: isForge, install: installForge },
+    { name: 'RSAKey', detect: isRSAKey, install: installJsbnRSA },
+    { name: 'jsbn', detect: (x) => x && isRSAKey(x.RSAKey), install: (x) => installJsbnRSA(x.RSAKey) },
   ];
   for (const l of LIBS) trapGlobal(l.name, l.install);
+  // A top-level `function RSAKey() {}` in a classic script REPLACES the trap above without calling its
+  // setter (global function declarations redefine the property). So also sweep the globals once the page
+  // has loaded its scripts, and a few more times while the webpack poll below runs.
+  const sweepGlobals = () => {
+    for (const l of LIBS) {
+      try { const v = globalThis[l.name]; if (v && l.detect(v)) l.install(v); } catch (_) {}
+    }
+  };
+  if (typeof addEventListener === 'function') {
+    try { addEventListener('DOMContentLoaded', sweepGlobals); addEventListener('load', sweepGlobals); } catch (_) {}
+  }
 
   // ---- bundled libraries (webpack) ---------------------------------------
   // Real apps bundle crypto-js inside webpack modules, off `window`. Intercept the
   // chunk loader, wrap each module factory, and when its exports look like a known
   // library, hook it with the same installer used for the global.
   const scanExports = (exp) => {
-    if (!exp || typeof exp !== 'object') return;
+    if (!exp || (typeof exp !== 'object' && typeof exp !== 'function')) return; // a module may export a constructor
     for (const cand of [exp, exp.default]) for (const l of LIBS) if (l.detect(cand)) l.install(cand);
   };
   const wrapFactories = (modules) => {
@@ -460,6 +505,7 @@
     for (const k of Object.keys(globalThis)) {
       if (/^webpackChunk/.test(k) && Array.isArray(globalThis[k])) hookChunkArray(globalThis[k]);
     }
+    sweepGlobals();
     if (++polls > 40) clearInterval(chunkPoll);
   }, 300);
 

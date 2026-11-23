@@ -56,6 +56,9 @@ Mirror non-trivial additions in `burp-ext/.../JsonPaths.java` for insertion poin
 `chrome-ext/hook.js` — write an `installX(obj)` (wrap its encrypt/decrypt via `wrap()` so the toString
 disguise applies), then append `{ name, detect, install }` to the `LIBS` array. That hooks it both as a
 global and inside webpack bundles. Prototype-based libraries (e.g. JSEncrypt) use `trapGlobal` directly.
+A library defined by a top-level `function X() {}` (e.g. jsbn `RSAKey`) replaces the global trap without
+calling its setter; `LIBS` entries are also found by `sweepGlobals` (DOMContentLoaded, load, and the
+webpack poll), so give such a library a `LIBS` entry whose `detect` accepts the constructor itself.
 Transport/location capture for fetch/XHR lives in `chrome-ext/hook-transport.js`.
 
 ## Custom per-target code

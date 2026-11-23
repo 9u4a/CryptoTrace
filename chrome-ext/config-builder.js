@@ -83,6 +83,19 @@
     }
     return s;
   }
+  // Hex (BigInteger.toString(16): no leading zeros, maybe odd length) -> unpadded base64url, for JWK fields.
+  function hexToB64url(h) {
+    let t = String(h || '').replace(/^0+(?=.)/, '');
+    if (t.length % 2) t = '0' + t;
+    let out = '', acc = 0, bits = 0;
+    for (let i = 0; i < t.length; i += 2) {
+      acc = (acc << 8) | parseInt(t.slice(i, i + 2), 16); bits += 8;
+      while (bits >= 6) { bits -= 6; out += B64[(acc >> bits) & 63]; }
+      acc &= (1 << bits) - 1;
+    }
+    if (bits) out += B64[(acc << (6 - bits)) & 63];
+    return out.replace(/\+/g, '-').replace(/\//g, '_');
+  }
   function asText(v) {
     if (!v) return null;
     if (v.encoding === 'utf8') return String(v.value);
@@ -163,6 +176,7 @@
       if (r.lib === 'webcrypto') spec = webcryptoAlg(r.alg, keyBytes);
       else if (r.lib === 'cryptojs') spec = cryptojsAlg(r, keyBytes);
       else if (r.lib === 'jsencrypt') spec = { alg: 'rsa', padding: 'pkcs1' };
+      else if (r.lib === 'jsbn') spec = { alg: 'rsa', padding: 'pkcs1', inEncoding: 'utf8', outEncoding: 'hex' };
       if (!spec) continue;
 
       // Reuse the cipher already chosen for this apply location (request or response) instead of
@@ -194,6 +208,17 @@
               ? { source: 'static', value: String(r.key.value), encoding: 'utf8' }
               : { source: 'static', value: String(r.key.value), encoding: 'base64' };
             spec[r.op === 'decrypt' ? 'privateKey' : 'publicKey'] = keyNameFor(entry);
+          } else if (r.lib === 'jsbn' && r.key && r.key.encoding === 'rsa-hex') {
+            // jsbn keeps n/e (and with setPrivateEx d + CRT params) as hex: rebuild them as JWK, which the
+            // server loads directly. A JWK private key needs every CRT field; with only n/e/d it stays public.
+            const k = JSON.parse(String(r.key.value));
+            const b = (h) => hexToB64url(h);
+            const pub = { kty: 'RSA', n: b(k.n), e: b(k.e) };
+            spec.publicKey = keyNameFor({ source: 'static', value: JSON.stringify(pub), encoding: 'utf8' });
+            if (['d', 'p', 'q', 'dmp1', 'dmq1', 'coeff'].every((f) => k[f])) {
+              const priv = { ...pub, d: b(k.d), p: b(k.p), q: b(k.q), dp: b(k.dmp1), dq: b(k.dmq1), qi: b(k.coeff) };
+              spec.privateKey = keyNameFor({ source: 'static', value: JSON.stringify(priv), encoding: 'utf8' });
+            }
           } else {
             spec._note = 'RSA: add publicKey/privateKey (DER base64 or PEM) manually';
           }

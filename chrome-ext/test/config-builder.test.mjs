@@ -346,3 +346,32 @@ test('a key that changes between captures at one location is flagged per-request
   assert.deepEqual(Object.keys(out.ciphers), []);
   assert.match(skipped[0], /key changes per request/);
 });
+
+test('jsbn RSAKey record (hex n/e[/d...]) -> rsa pkcs1 cipher with a JWK key, hex output; private half self-tests', () => {
+  const buildConfig = loadBuilder();
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
+  const pj = privateKey.export({ format: 'jwk' });
+  const hex = (b64u) => Buffer.from(b64u, 'base64url').toString('hex').replace(/^0+/, ''); // BigInteger.toString(16) drops leading zeros
+  const ct = crypto.publicEncrypt({ key: publicKey, padding: crypto.constants.RSA_PKCS1_PADDING }, Buffer.from('pw1234!')).toString('hex');
+  const pubRec = { lib: 'jsbn', op: 'encrypt', alg: { name: 'RSA', padding: 'pkcs1' },
+    key: { encoding: 'rsa-hex', value: JSON.stringify({ n: hex(pj.n), e: hex(pj.e) }) },
+    input: { encoding: 'utf8', value: 'pw1234!' }, output: { encoding: 'hex', value: ct },
+    apply: { in: 'form', name: 'encPw' }, frame: 'https://bank.example.test/login' };
+  const cfg = buildConfig([pubRec]);
+  const c = cfg.ciphers.c1;
+  assert.deepEqual({ alg: c.alg, padding: c.padding, inEncoding: c.inEncoding, outEncoding: c.outEncoding },
+    { alg: 'rsa', padding: 'pkcs1', inEncoding: 'utf8', outEncoding: 'hex' });
+  const jwk = JSON.parse(cfg.keys[c.publicKey].value);
+  assert.deepEqual({ kty: jwk.kty, n: jwk.n, e: jwk.e }, { kty: 'RSA', n: pj.n, e: pj.e });
+  assert.equal(loadIntoEngine(cfg).error, undefined);
+
+  // a key with the private fields (setPrivateEx) -> privateKey, and the captured vector self-tests
+  const full = { ...pubRec, key: { encoding: 'rsa-hex', value: JSON.stringify({ n: hex(pj.n), e: hex(pj.e), d: hex(pj.d),
+    p: hex(pj.p), q: hex(pj.q), dmp1: hex(pj.dp), dmq1: hex(pj.dq), coeff: hex(pj.qi) }) } };
+  const cfg2 = buildConfig([full]);
+  const c2 = cfg2.ciphers.c1;
+  assert.ok(c2.privateKey, 'private fields -> privateKey');
+  const res = loadIntoEngine(cfg2);
+  assert.equal(res.error, undefined, res.error);
+  assert.ok(res.selftest.length === 1 && res.selftest[0].ok, JSON.stringify(res.selftest));
+});

@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
@@ -88,4 +89,31 @@ test('forge AES-CBC cipher is captured through start/update/finish', () => {
   assert.equal(enc.input.value, 'secret message');
   assert.ok(enc.iv && enc.iv.value === iv, 'iv captured');
   assert.ok(last('forge', 'decrypt'), 'decrypt captured');
+});
+
+test('jsbn RSAKey declared as global functions (classic <script> include) is captured with its key', async () => {
+  // Korean sites include Tom Wu's jsbn/rsa.js as plain scripts: `function RSAKey() {...}` at top level.
+  // A global function declaration replaces hook.js's setter trap without calling it, so the hook has to
+  // find RSAKey by sweeping globals after load. Unwrap the vendored copy's IIFE to get that exact shape.
+  const src = read('jsbn-rsa-1.0.4.js').replace(/^\s*\(function\(\) \{/, '').replace(/\}\)\.call\(this\);\s*$/, '');
+  vm.runInThisContext(src, { filename: 'rsa.js' });
+  assert.equal(typeof globalThis.RSAKey, 'function', 'RSAKey is a global function');
+  await new Promise((r) => setTimeout(r, 700)); // the hook's post-load sweep
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
+  const jwk = publicKey.export({ format: 'jwk' });
+  const hex = (b64u) => Buffer.from(b64u, 'base64url').toString('hex');
+  const rsa = new globalThis.RSAKey();
+  rsa.setPublic(hex(jwk.n), hex(jwk.e));
+  const ct = rsa.encrypt('pw1234!');
+  assert.equal(crypto.privateDecrypt({ key: privateKey, padding: crypto.constants.RSA_PKCS1_PADDING }, Buffer.from(ct, 'hex')).toString(), 'pw1234!',
+    'library still encrypts correctly through the wrapper');
+  const rec = last('jsbn', 'encrypt');
+  assert.ok(rec, 'encrypt captured');
+  assert.equal(rec.input.value, 'pw1234!');
+  assert.deepEqual({ ...rec.output }, { encoding: 'hex', value: ct });
+  const key = JSON.parse(rec.key.value);
+  assert.equal(rec.key.encoding, 'rsa-hex');
+  assert.equal(BigInt('0x' + key.n), BigInt('0x' + hex(jwk.n)));
+  assert.equal(parseInt(key.e, 16), 65537);
+  assert.equal(Object.keys(globalThis.RSAKey.prototype).includes('__ct_wrapped'), false, 'no enumerable marker on the prototype');
 });
