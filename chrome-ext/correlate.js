@@ -109,7 +109,7 @@
     try { return new URL(url, 'http://x').pathname; } catch (_) { return ''; }
   }
 
-  function place(t, candidates, key, prop) {
+  function place(t, candidates, key, prop, extra) {
     const at = pathOf(t.url);
     const slots = slotsOf(t);
     for (const slot of slots) {
@@ -120,7 +120,7 @@
         if (extra && (!best || r[key].value.length > best[key].value.length)) { best = r; bestExtra = extra; }
       }
       if (!best) continue;
-      best[prop] = { ...slot.loc, at, ...bestExtra };
+      best[prop] = { ...slot.loc, at, ...bestExtra, ...extra };
       const ivf = ivFieldOf(best, slots, slot);
       if (ivf) best.ivApply = ivf;
     }
@@ -132,6 +132,8 @@
       return place(t, decs, 'input', 'applyResponse');
     }
     const outs = records.filter((r) => r.output && r.output.value && r.lib !== 'transport').slice(-80);
+    // A WebSocket message is not an HTTP request: keep its placement apart so it never becomes an apply rule.
+    if (t.op === 'websocket') return place(t, outs, 'output', 'applyWebSocket', { url: t.url });
     place(t, outs, 'output', 'apply');
   }
 

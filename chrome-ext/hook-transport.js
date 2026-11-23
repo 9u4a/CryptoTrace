@@ -75,10 +75,16 @@
       try {
         const url = typeof input === 'string' ? input : input && input.url;
         const method = (init && init.method) || (input && input.method) || 'GET';
-        const headers = parseHeaders(init && init.headers);
+        const isRequest = typeof Request === 'function' && input instanceof Request;
+        const headers = parseHeaders((init && init.headers) || (isRequest ? input.headers : null));
         const ctype = (headers.find(([k]) => /^content-type$/i.test(k)) || [])[1];
-        send({ lib: 'transport', op: 'fetch', url, method, query: queryOf(url),
-          headers, body: describeBody(init ? init.body : null, ctype) });
+        const record = (body) => send({ lib: 'transport', op: 'fetch', url, method, query: queryOf(url), headers, body });
+        if (isRequest && !(init && 'body' in init) && input.body) {
+          // fetch(new Request(url, {body})): the body is a stream -- read a clone (before fetch consumes it)
+          input.clone().text().then((text) => record(describeBody(text, ctype)), () => record(describeBody(null)));
+        } else {
+          record(describeBody(init ? init.body : null, ctype));
+        }
       } catch (_) { /* never break the page's fetch */ }
       const p = orig.apply(this, arguments);
       try {
@@ -86,6 +92,27 @@
         p.then((res) => { try { res.clone().text().then((text) => send({ lib: 'transport', op: 'response', url, body: describeBody(text) })).catch(() => {}); } catch (_) {} }, () => {});
       } catch (_) { /* observation only; never alter the page's promise */ }
       return p;
+    };
+  }
+
+  // ---- navigator.sendBeacon (a POST that outlives the page) ---------------
+  const nav = globalThis.navigator;
+  if (nav && typeof nav.sendBeacon === 'function') {
+    const owner = Object.prototype.hasOwnProperty.call(nav, 'sendBeacon') ? nav : Object.getPrototypeOf(nav);
+    const orig = owner.sendBeacon;
+    owner.sendBeacon = function (url, data) {
+      try { send({ lib: 'transport', op: 'beacon', url: String(url), method: 'POST', query: queryOf(url), headers: [], body: describeBody(data) }); } catch (_) {}
+      return orig.apply(this, arguments);
+    };
+  }
+
+  // ---- WebSocket messages (shown in the panel; Burp does not rewrite WebSocket frames yet) ----
+  const WS = globalThis.WebSocket;
+  if (WS && WS.prototype && typeof WS.prototype.send === 'function') {
+    const orig = WS.prototype.send;
+    WS.prototype.send = function (data) {
+      try { send({ lib: 'transport', op: 'websocket', url: String(this.url || ''), headers: [], body: describeBody(data) }); } catch (_) {}
+      return orig.apply(this, arguments);
     };
   }
 

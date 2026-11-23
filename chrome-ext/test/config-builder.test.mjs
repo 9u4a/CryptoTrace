@@ -522,3 +522,12 @@ test('Node-crypto API records (crypto-browserify) -> cipher spec from the algori
     assert.deepEqual(res.selftest, [{ cipher: 'c1', ok: true }], w.alg + ' ' + JSON.stringify(res.selftest));
   }
 });
+
+test('a WebSocket placement is noted, not turned into an HTTP apply rule', () => {
+  const buildConfig = loadBuilder();
+  const rec = aesjsRecord('cbc', crypto.randomBytes(32), crypto.randomBytes(16), 'ws text');
+  rec.applyWebSocket = { in: 'json', path: '$.payload', at: '/stream', url: 'wss://api.shop.test/stream' };
+  const cfg = buildConfig([rec]);
+  assert.deepEqual(cfg.apply.request.length + cfg.apply.response.length, 0);
+  assert.ok(cfg._notes.some((n) => /WebSocket wss:\/\/api\.shop\.test\/stream \$\.payload -> c1/.test(n)), JSON.stringify(cfg._notes));
+});

@@ -14,6 +14,9 @@ const lastSent = () => [...records].reverse().find((r) => r.lib === 'transport' 
 before(() => {
   globalThis.__cryptotrace_emit = (line) => { try { records.push(JSON.parse(line)); } catch (_) {} };
   globalThis.fetch = async () => new Response('ok'); // the page's network, stubbed
+  globalThis.__beacons = [];
+  globalThis.navigator.sendBeacon = (url, data) => { globalThis.__beacons.push([url, data]); return true; };
+  globalThis.WebSocket = class FakeWebSocket { constructor(url) { this.url = url; this.sent = []; } send(d) { this.sent.push(d); } };
   vm.runInThisContext(fs.readFileSync(path.join(ROOT, 'chrome-ext/hook-transport.js'), 'utf8'), { filename: 'hook-transport.js' });
 });
 
@@ -42,4 +45,30 @@ test('JSON and plain text bodies keep their existing description', async () => {
   assert.deepEqual(lastSent().body, { kind: 'json', fields: [{ path: '$.data', value: 'xyz' }] });
   await fetch('/b', { method: 'POST', body: 'U2FsdGVkX1+abc==' }); // base64 with '=' padding is not a form
   assert.deepEqual(lastSent().body, { kind: 'text', sample: 'U2FsdGVkX1+abc==' });
+});
+
+const lastOp = (op) => [...records].reverse().find((r) => r.lib === 'transport' && r.op === op);
+const tick = () => new Promise((r) => setTimeout(r, 20));
+
+test('fetch(new Request(...)) reports the Request body (read from a clone)', async () => {
+  await fetch(new Request('http://api.test/r', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enc: 'cipher-in-request' }) }));
+  await tick();
+  const r = lastOp('fetch');
+  assert.equal(r.url, 'http://api.test/r');
+  assert.deepEqual(r.body, { kind: 'json', fields: [{ path: '$.enc', value: 'cipher-in-request' }] });
+});
+
+test('navigator.sendBeacon bodies are reported and still sent', async () => {
+  assert.equal(navigator.sendBeacon('/log', 'a=1&enc=QUJDREVGR0hJSktM'), true);
+  assert.deepEqual(lastOp('beacon').body, { kind: 'form', fields: [{ name: 'a', value: '1' }, { name: 'enc', value: 'QUJDREVGR0hJSktM' }] });
+  assert.equal(globalThis.__beacons.length, 1);
+});
+
+test('WebSocket.send messages are reported with the socket URL', async () => {
+  const ws = new WebSocket('wss://api.test/stream');
+  ws.send(JSON.stringify({ t: 'msg', payload: 'U2VjcmV0UGF5bG9hZA==' }));
+  const r = lastOp('websocket');
+  assert.equal(r.url, 'wss://api.test/stream');
+  assert.deepEqual(r.body, { kind: 'json', fields: [{ path: '$.t', value: 'msg' }, { path: '$.payload', value: 'U2VjcmV0UGF5bG9hZA==' }] });
+  assert.deepEqual(ws.sent.length, 1, 'message still sent');
 });

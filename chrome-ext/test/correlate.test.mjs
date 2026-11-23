@@ -80,3 +80,12 @@ test('IV prepended to the ciphertext bytes (16-byte IV breaks base64 substring a
   correlate({ lib: 'transport', op: 'fetch', url: '/p', body: { kind: 'text', sample: wire } }, [rec]);
   assert.deepEqual({ ...rec.apply }, { in: 'body', at: '/p', ivPrefix: 16 });
 });
+
+test('a ciphertext sent over a WebSocket -> applyWebSocket (never an HTTP apply rule)', () => {
+  const correlate = load();
+  const rec = enc('U2VjcmV0UGF5bG9hZA==');
+  correlate({ lib: 'transport', op: 'websocket', url: 'wss://api.test/stream', headers: [],
+    body: { kind: 'json', fields: [{ path: '$.payload', value: 'U2VjcmV0UGF5bG9hZA==' }] } }, [rec]);
+  assert.equal(rec.apply, undefined);
+  assert.deepEqual({ ...rec.applyWebSocket }, { in: 'json', path: '$.payload', at: '/stream', url: 'wss://api.test/stream' });
+});

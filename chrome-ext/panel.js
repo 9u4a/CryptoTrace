@@ -167,6 +167,7 @@ function applyCell(rec) {
   const parts = [];
   if (rec.apply) parts.push('req ' + applyText(rec.apply));
   if (rec.applyResponse) parts.push('res ' + applyText(rec.applyResponse));
+  if (rec.applyWebSocket) parts.push('ws ' + applyText(rec.applyWebSocket));
   return parts.join(' · ');
 }
 
@@ -263,6 +264,7 @@ function renderDetail(rec) {
     [rec.op === 'encrypt' ? 'output (암호문)' : rec.op === 'decrypt' ? 'output (평문)' : 'output', rec.output, isPlain('output') ? 'plain' : ''],
     ['apply (req)', rec.apply ? { value: applyText(rec.apply) + (rec.apply.at ? '   @ ' + rec.apply.at : '') } : null, ''],
     ['apply (res)', rec.applyResponse ? { value: applyText(rec.applyResponse) + (rec.applyResponse.at ? '   @ ' + rec.applyResponse.at : '') } : null, ''],
+    ['apply (ws)', rec.applyWebSocket ? { value: applyText(rec.applyWebSocket) + '   @ ' + rec.applyWebSocket.url + '  (Burp 미지원)' } : null, ''],
     ['site', rec.site && rec.site.url ? { value: rec.site.url + ':' + rec.site.line + ':' + rec.site.col } : null, ''],
   ];
   if (rec.format) rows.splice(1, 0, ['format', { value: rec.format }, '']);

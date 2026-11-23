@@ -244,6 +244,7 @@
       return name;
     };
 
+    const wsNotes = new Set();
     for (const r of records) {
       if (r.lib === 'transport' || (r.op !== 'encrypt' && r.op !== 'decrypt')) continue;
       if (r.frame) hosts.add(hostFromFrame(r.frame));
@@ -329,6 +330,10 @@
       }
       // apply rules from correlated transport locations (request and/or response side); `at` (the captured
       // request path) is kept aside and only becomes a pathRegex when the direction needs it (see below)
+      if (r.applyWebSocket) {
+        const w = r.applyWebSocket;
+        wsNotes.add(`WebSocket ${w.url} ${w.path || w.name || w.in} -> ${id} (Burp does not rewrite WebSocket messages yet; no apply rule made)`);
+      }
       // (encoding / ivPrefix placement details live in the cipher spec, not the rule)
       const rule = (a) => { const { at, encoding, ivPrefix, ...rest } = a; const out = { ...rest, cipher: id }; Object.defineProperty(out, '_at', { value: at, enumerable: false }); return out; };
       if (locKey && !ruleByLoc.has(locKey)) { cfg.apply.request.push(rule(r.apply)); ruleByLoc.set(locKey, id); }
@@ -350,6 +355,8 @@
         cfg.selftest.push(vec);
       }
     }
+
+    for (const n of wsNotes) cfg._notes.push(n);
 
     // Draft integrity rules from captured hash/HMAC calls whose output landed in a request field
     // (a token/signature). The analyst must set the "input" template to match the page; the captured
