@@ -21,6 +21,7 @@
 - **브리지 보호**: Send to Burp는 `127.0.0.1`로만 보내고, Burp는 페어링 토큰·Host·확장 Origin이 모두 맞을 때만 받습니다.
   커스텀 JS가 든 설정은 Burp에서 확인한 뒤에만 로드합니다.
 - **평문 유출 차단**: 암호화(또는 필수 서명 계산)에 실패한 요청은 평문으로 보내지 않고 막습니다.
+- **페이지 코드 실행은 명시적으로**: 브라우저 오라클은 Burp **Options**와 패널 체크를 둘 다 켜야 동작하고, 대상 서버로는 아무것도 보내지 않습니다.
 - **대상 데이터 분리**: 받은 설정은 `~/.cryptotrace/received/`, 내보낸 설정은 무시 폴더 `output/`에만 둡니다. 저장소에 올리지 않습니다.
 
 > 허가받은 진단 범위 안에서만 사용하세요.
@@ -31,6 +32,7 @@
 |---|---|
 | **크롬 확장** (DevTools 패널) | WebCrypto(생성·파생·unwrap 키 포함)·CryptoJS·forge·JSEncrypt·sjcl·jsbn `RSAKey`·aes-js·Node `crypto` API(crypto-browserify) 호출을 후킹(Worker·iframe·webpack 번들 포함), 호출 위치로 Sources 이동 |
 | **라이브러리 없는 암호화** | 모든 스크립트(Worker·eval 포함)에서 AES·SEED·ARIA·SM4·DES·SHA·MD5 상수를 찾아 위치 표시. 출처 모를 암호문은 만든 함수까지 역추적하고, **추적** 버튼으로 그 함수의 입력·출력·키 후보를 기록 → 서버가 알고리즘·키·IV를 자동 판정(AES·ARIA·SEED) |
+| **브라우저 오라클** (ACTIVE, 기본 꺼짐) | 표준 알고리즘으로 판정되지 않는 커스텀·난독화 암호는 추적한 **원본 페이지 함수**를 Burp가 호출해 재암호화. 탭이 열려 있어야 하며 호출 간격 제한(기본 100ms) |
 | **전송 위치 연결** | fetch/XHR·`Request`·sendBeacon 본문(JSON·form·FormData)·헤더·쿼리·쿠키에서 암호문 위치를 자동으로 찾음. hex/base64url로 다시 인코딩된 암호문, IV가 앞에 붙거나 별도 필드로 가는 경우도 인식. WebSocket은 패널 표시만 |
 | **Send to Burp** | 캡처한 설정을 Burp로 바로 전송·로드·자가검증, 결과를 패널에 표시. 자동 전송 선택, 키를 잡지 못했거나 요청마다 바뀌는 키는 이유와 함께 빼고 보냄. **Export**로 손볼 초안 저장도 가능 |
 | **로컬 서버** | AES·ARIA(CBC/CTR/GCM/ECB 등 OpenSSL 대칭 암호)·SEED(내장)·ChaCha20-Poly1305·RC4·RSA(OAEP/PKCS1, DER·PEM·JWK 키)·고정 키 ECDH, KDF(PBKDF2/scrypt/HKDF/OpenSSL EVP), 커스텀 JS 모듈, 로드 시 자가검증 |
@@ -59,6 +61,7 @@ Node.js 20+는 서버를 스크립트로 띄울 때만 필요합니다(`crypto-s
 - 연습용 대상: `node samples/server.mjs` → `http://127.0.0.1:8088` (직접 만든 샘플, 가짜 키)
 - 지원 범위: [docs/COVERAGE.md](docs/COVERAGE.md) — 실제 사이트 패턴 33종을 자동 측정한 결과(되는 것·한계)
 - 라이브러리 없는 암호화: 패널에 **unknown** 행이 생기면 선택 → **이 함수들 추적** → 같은 기능을 한 번 더 실행 → **Send to Burp**
+- 판정 안 되는 커스텀 암호(`ct-keep:`으로만 보임): Burp **Options → ACTIVE: Browser oracle** + 패널 **Burp 설정 → 오라클(페이지 함수 실행)** 체크 → Decrypted 탭에서 `ct-keep:...`을 평문으로 바꿔 전송하면 페이지 함수가 암호화
 
 ## 변경 이력
 
