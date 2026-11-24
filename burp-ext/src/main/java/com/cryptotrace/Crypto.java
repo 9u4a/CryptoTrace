@@ -53,7 +53,12 @@ public final class Crypto {
 
     /** Encrypts every configured location and strips the X-CT-Plain marker. */
     public Result<HttpRequest> encryptRequest(HttpRequest req) throws ServerClient.ServerException {
-        return requestOp("encryptRequest", req);
+        return requestOp("encryptRequest", req, false);
+    }
+
+    /** encryptRequest that never waits for the browser oracle (oracle ciphers fail at once): for the UI thread. */
+    public Result<HttpRequest> encryptRequestNow(HttpRequest req) throws ServerClient.ServerException {
+        return requestOp("encryptRequest", req, true);
     }
 
     public Result<HttpResponse> decryptResponse(HttpRequest req, HttpResponse res) throws ServerClient.ServerException {
@@ -65,12 +70,17 @@ public final class Crypto {
     }
 
     private Result<HttpRequest> requestOp(String op, HttpRequest req) throws ServerClient.ServerException {
+        return requestOp(op, req, false);
+    }
+
+    private Result<HttpRequest> requestOp(String op, HttpRequest req, boolean noOracle) throws ServerClient.ServerException {
         JsonObject msg = new JsonObject();
         msg.addProperty("path", req.path());
         msg.add("headers", headersJson(req.headers()));
         putBody(msg, req.body());
         JsonObject args = target(req);
         args.add("request", msg);
+        if (noOracle) args.addProperty("noOracle", true);
         JsonObject res = server.call(op, args);
         String matched = res.get("matched").isJsonNull() ? null : res.get("matched").getAsString();
         JsonObject out = res.getAsJsonObject("request");

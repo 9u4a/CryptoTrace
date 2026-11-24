@@ -58,7 +58,10 @@ rl.on('line', (line) => {
     else w.reject(new Error(req.error || 'oracle call failed'));
     return;
   }
-  engine.handleAsync(req, oracleCall).then(
+  // noOracle: a caller that must answer at once (Burp's editor tab on the UI thread) -- oracle ciphers fail fast
+  // and the caller defers encryption to send time instead of freezing while the browser computes the value.
+  const ask = req.noOracle ? () => Promise.reject(new Error('deferred: the page function runs when the request is sent')) : oracleCall;
+  engine.handleAsync(req, ask).then(
     (res) => write({ id: req.id ?? null, ok: true, ...res }),
     (e) => write({ id: req.id ?? null, ok: false, error: e.message }),
   );

@@ -108,13 +108,13 @@ public final class PlainEditors {
             // blocks the request if it still can't encrypt.
             String why;
             try {
-                Crypto.Result<HttpRequest> enc = crypto.encryptRequest(edited);
+                Crypto.Result<HttpRequest> enc = crypto.encryptRequestNow(edited); // UI thread: no oracle wait
                 if (enc.allOk()) return enc.message();
                 why = enc.errors();
             } catch (ServerClient.ServerException e) {
                 why = e.getMessage();
             }
-            api.logging().logToError("CryptoTrace re-encrypt failed, will retry when sent: " + why);
+            if (!why.contains("deferred:")) api.logging().logToError("CryptoTrace re-encrypt failed, will retry when sent: " + why);
             return edited.hasHeader(Crypto.PLAIN_MARKER) ? edited : edited.withAddedHeader(Crypto.PLAIN_MARKER, "1");
         }
 
