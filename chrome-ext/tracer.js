@@ -252,6 +252,17 @@
         s.fns.clear();
         if (s.on) { await cdp('Debugger.setSkipAllPauses', { skip: true }, t).catch(() => {}); s.on = false; }
       },
+      /** Run fn with tracing pauses off on t (an oracle call must not stop at our breakpoints), then restore. */
+      async withoutPauses(t, fn) {
+        const s = stateOf(t);
+        if (!s.on) return fn();
+        await cdp('Debugger.setSkipAllPauses', { skip: true }, t).catch(() => {});
+        try {
+          return await fn();
+        } finally {
+          if (s.on) await cdp('Debugger.setSkipAllPauses', { skip: false }, t).catch(() => {});
+        }
+      },
       traced(t) { return [...stateOf(t).fns.values()].map((f) => ({ name: f.name, url: f.url, line: f.line })); },
     };
   }

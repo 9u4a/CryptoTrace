@@ -77,7 +77,7 @@ async function runCase(browser, c) {
     }
     await tab.evaluate(`window.__run(${JSON.stringify(P(2))})`);
     await sleep(800);
-    for (const t of tracedSessions) await tracer.stop(t).catch(() => {});
+    // tracing stays on until the case ends, as in the panel (the oracle runs with tracing breakpoints armed)
 
     // config as Send to Burp builds it, loaded by the crypto server
     const { seen, unknown } = replay(mods, tab.records);
@@ -125,8 +125,9 @@ async function runCase(browser, c) {
       // Burp + bridge + panel stand-in for the L4 oracle: run the registered page function in its tab/worker
       const oracleCall = async (job) => {
         const owner = tab.records.find((r) => r.lib === 'traced' && r.oracleKey === job.fn);
-        const res = await browser.cdp('Runtime.evaluate', { expression: mods.CryptoTraceTracer.oracleExpression(job.fn, job.value),
-          awaitPromise: true, returnByValue: true }, (owner && owner.__session) || tab.s);
+        const res = await Promise.race([browser.cdp('Runtime.evaluate', { expression: mods.CryptoTraceTracer.oracleExpression(job.fn, job.value),
+          awaitPromise: true, returnByValue: true }, (owner && owner.__session) || tab.s),
+        sleep(5000).then(() => { throw new Error('oracle evaluate hung (page paused?)'); })]);
         if (res.exceptionDetails) throw new Error((res.exceptionDetails.exception && res.exceptionDetails.exception.description) || 'page function threw');
         usedOracle = true;
         return res.result.value;
@@ -165,6 +166,7 @@ async function runCase(browser, c) {
     out.status = 'error';
     out.notes.push(e.message);
   } finally {
+    for (const t of tracedSessions) await tracer.stop(t).catch(() => {});
     await tab.close();
   }
   return out;

@@ -552,6 +552,7 @@ function oracleSay(state, msg, isErr) {
   oracleState = state;
   setStatus(msg, isErr);
 }
+const ORACLE_CALL_MS = 5000; // < Burp's stale limit (7 s) and the server's oracle timeout (8 s)
 async function oracleLoop() {
   if (oracleRunning) return;
   oracleRunning = true;
@@ -566,8 +567,16 @@ async function oracleLoop() {
       const job = r.job;
       const owner = records.find((x) => x.lib === 'traced' && x.oracleKey === job.fn);
       try {
-        const res = await cdp('Runtime.evaluate', { expression: CryptoTraceTracer.oracleExpression(job.fn, job.value),
-          awaitPromise: true, returnByValue: true }, (owner && owner.__target) || DEBUGGEE);
+        const target = (owner && owner.__target) || DEBUGGEE;
+        oracleSay('run' + job.oid, `오라클 #${job.oid}: 페이지 함수 ${String(job.fn).split('@')[0]}() 실행 중`);
+        // Tracing breakpoints off while the page function runs, and never wait past the server's deadline:
+        // a stuck call would stop this loop from picking up the next jobs.
+        const call = () => cdp('Runtime.evaluate', { expression: CryptoTraceTracer.oracleExpression(job.fn, job.value),
+          awaitPromise: true, returnByValue: true, timeout: ORACLE_CALL_MS }, target);
+        const res = await Promise.race([
+          tracer ? tracer.withoutPauses(target, call) : call(),
+          sleep(ORACLE_CALL_MS + 500).then(() => { throw new Error(`페이지 함수가 ${ORACLE_CALL_MS / 1000}초 안에 끝나지 않음 (Sources에서 일시정지 중?)`); }),
+        ]);
         if (res.exceptionDetails) throw new Error((res.exceptionDetails.exception && res.exceptionDetails.exception.description) || 'page function threw');
         await CryptoTraceBridge.oracleResult(fetch, burp, { oid: job.oid, ok: true, value: String(res.result.value) });
         oracleDone++;
