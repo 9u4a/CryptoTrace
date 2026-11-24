@@ -55,6 +55,10 @@ public final class CryptoHttpHandler implements HttpHandler {
             Crypto.Result<HttpRequest> enc = crypto.encryptRequest(req);
             if (enc.matched() != null && enc.allOk()) {
                 remember(req);
+                List<String[]> where = Crypto.appliedLocations(enc.applied());
+                api.logging().logToOutput("CryptoTrace encrypted " + req.method() + " " + req.url() + " [" + enc.matched() + "] "
+                        + (where.isEmpty() ? "nothing (no apply rule matched this request; sent unchanged)"
+                                : String.join(", ", where.stream().map(w -> w[0] + " " + w[1]).toList())));
                 return RequestToBeSentAction.continueWith(enc.message());
             }
             why = enc.matched() == null ? "no profile matches this host/path" : enc.errors();

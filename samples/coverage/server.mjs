@@ -118,6 +118,7 @@ export function createCoverageServer() {
         // the case's API endpoint: keep the raw request, then decrypt it like the target would
         const raw = { method: req.method, path: req.url, headers: Object.entries(req.headers), body, accepted: false };
         last.set(c.id, raw);
+        if (process.env.COV_LOG) res.on("finish", () => console.log(new Date().toISOString().slice(11, 19), c.id, "body=" + body, "plain=" + JSON.stringify(raw.plain ?? raw.error)));
         const r = { method: req.method, headers: req.headers, body, query: url.searchParams,
           json: () => JSON.parse(body), form: () => new URLSearchParams(body) };
         try {

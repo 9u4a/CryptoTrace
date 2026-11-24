@@ -103,14 +103,19 @@ public final class PlainEditors {
             // Apply the edited path/headers/body onto the ORIGINAL request object so its HTTP/2
             // metadata, header order and casing survive (parsing raw text would discard them).
             HttpRequest edited = mergeOnto(current.request(), editor.getRequest().withRemovedHeader(ERROR_HEADER));
+            // On failure, never hand back the half-encrypted message (it would go out with plaintext fields):
+            // return the edited plaintext marked X-CT-Plain so the HTTP handler retries at send time and
+            // blocks the request if it still can't encrypt.
+            String why;
             try {
                 Crypto.Result<HttpRequest> enc = crypto.encryptRequest(edited);
-                if (!enc.allOk()) api.logging().logToError("CryptoTrace re-encrypt: " + enc.errors());
-                return enc.message();
+                if (enc.allOk()) return enc.message();
+                why = enc.errors();
             } catch (ServerClient.ServerException e) {
-                api.logging().logToError("CryptoTrace re-encrypt failed, keeping original: " + e.getMessage());
-                return current.request();
+                why = e.getMessage();
             }
+            api.logging().logToError("CryptoTrace re-encrypt failed, will retry when sent: " + why);
+            return edited.hasHeader(Crypto.PLAIN_MARKER) ? edited : edited.withAddedHeader(Crypto.PLAIN_MARKER, "1");
         }
 
         /** Read the edited request's fields only, then transplant them onto `base`. */
@@ -192,7 +197,10 @@ public final class PlainEditors {
             if (!editor.isModified()) return current.response();
             HttpResponse edited = editor.getResponse().withRemovedHeader(ERROR_HEADER);
             try {
-                return crypto.encryptResponse(current.request(), edited).message();
+                Crypto.Result<HttpResponse> enc = crypto.encryptResponse(current.request(), edited);
+                if (enc.allOk()) return enc.message();
+                api.logging().logToError("CryptoTrace re-encrypt failed, keeping original: " + enc.errors());
+                return current.response();
             } catch (ServerClient.ServerException e) {
                 api.logging().logToError("CryptoTrace re-encrypt failed, keeping original: " + e.getMessage());
                 return current.response();

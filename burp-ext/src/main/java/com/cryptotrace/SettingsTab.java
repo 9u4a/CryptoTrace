@@ -53,10 +53,16 @@ public final class SettingsTab {
         this.server = server;
         this.sessionKeys = sessionKeys;
         // L4 browser oracle: server questions -> broker -> panel (bridge long-poll) -> answers back to the server
-        oracle = new OracleBroker(server::oracleResult);
+        oracle = new OracleBroker((oid, ok, value, error) -> {
+            append("oracle #" + oid + (ok ? " answered (" + (value == null ? 0 : value.length()) + " chars)" : " failed: " + error));
+            server.oracleResult(oid, ok, value, error);
+        });
         oracle.enabled(settings.oracleEnabled());
         oracle.minIntervalMs(settings.oracleIntervalMs());
-        server.oracleSink(oracle::submit);
+        server.oracleSink(job -> {
+            append("oracle #" + job.get("oid").getAsInt() + " asked: " + job.get("fn").getAsString().split("@")[0] + "() " + job.get("dir").getAsString());
+            oracle.submit(job);
+        });
         build();
     }
 
