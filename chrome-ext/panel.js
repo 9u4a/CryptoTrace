@@ -569,12 +569,18 @@ async function oracleLoop() {
       try {
         const target = (owner && owner.__target) || DEBUGGEE;
         oracleSay('run' + job.oid, `오라클 #${job.oid}: 페이지 함수 ${String(job.fn).split('@')[0]}() 실행 중`);
-        // Tracing breakpoints off while the page function runs, and never wait past the server's deadline:
-        // a stuck call would stop this loop from picking up the next jobs.
-        const call = () => cdp('Runtime.evaluate', { expression: CryptoTraceTracer.oracleExpression(job.fn, job.value),
-          awaitPromise: true, returnByValue: true, timeout: ORACLE_CALL_MS }, target);
+        // Tracing must be off before the page function runs: with DevTools open, its own debugger session also
+        // stops at our breakpoints (skipAllPauses is per session) and leaves the page paused. The function is
+        // registered already, so tracing has done its job.
+        if (tracer) {
+          const wasTracing = tracer.traced(target).length > 0;
+          await tracer.stop(target);
+          if (wasTracing) setStatus('추적 종료: 오라클이 등록된 함수를 직접 호출합니다');
+        }
+        // never wait past the server's deadline: a stuck call would stop this loop from picking up the next jobs
         const res = await Promise.race([
-          tracer ? tracer.withoutPauses(target, call) : call(),
+          cdp('Runtime.evaluate', { expression: CryptoTraceTracer.oracleExpression(job.fn, job.value),
+            awaitPromise: true, returnByValue: true, timeout: ORACLE_CALL_MS }, target),
           sleep(ORACLE_CALL_MS + 500).then(() => { throw new Error(`페이지 함수가 ${ORACLE_CALL_MS / 1000}초 안에 끝나지 않음 (Sources에서 일시정지 중?)`); }),
         ]);
         if (res.exceptionDetails) throw new Error((res.exceptionDetails.exception && res.exceptionDetails.exception.description) || 'page function threw');
