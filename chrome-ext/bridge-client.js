@@ -63,10 +63,13 @@
 
   // ---- L4 browser oracle: Burp hands out jobs ({oid, fn, value}) the page's own function must compute ----
   /** Long-poll Burp for the next job. -> {enabled, job?} or {error}. */
-  async function oracleNext(fetchFn, { port, token }, waitMs) {
+  // `origin`: the inspected page's origin, so Burp hands this panel only jobs for functions traced on that origin
+  // (with several tabs open, each panel gets its own).
+  async function oracleNext(fetchFn, { port, token }, waitMs, origin) {
     if (!token) return { error: 'Burp token not set' };
     try {
-      const res = await fetchFn(endpoint(port, '/oracle/next?wait=' + Math.max(0, Number(waitMs) || 0)), {
+      const q = '/oracle/next?wait=' + Math.max(0, Number(waitMs) || 0) + (origin ? '&origin=' + encodeURIComponent(origin) : '');
+      const res = await fetchFn(endpoint(port, q), {
         method: 'GET', headers: { Authorization: 'Bearer ' + token },
       });
       if (res.status === 401) return { error: 'Burp rejected the token' };

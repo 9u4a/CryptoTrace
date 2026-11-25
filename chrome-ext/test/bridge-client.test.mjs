@@ -70,3 +70,13 @@ test('oracle: next() long-polls with the token and returns the job; result() pos
   const down = await B.oracleNext(async () => { throw new Error('refused'); }, { port: 1, token: 'x' }, 10);
   assert.match(down.error, /not reachable/);
 });
+
+test('oracleNext sends the inspected origin so Burp routes jobs to the right tab', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../bridge-client.js', import.meta.url), 'utf8');
+  const sandbox = { window: {} };
+  (await import('node:vm')).runInNewContext(src, sandbox);
+  let url = '';
+  const fetchFn = async (u) => { url = u; return { status: 200, json: async () => ({ enabled: true }) }; };
+  await sandbox.window.CryptoTraceBridge.oracleNext(fetchFn, { port: 17777, token: 't' }, 100, 'https://app.test:8443');
+  assert.match(url, /wait=100&origin=https%3A%2F%2Fapp\.test%3A8443$/);
+});

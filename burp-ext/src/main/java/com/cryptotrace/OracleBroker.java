@@ -2,7 +2,8 @@ package com.cryptotrace;
 
 import com.google.gson.JsonObject;
 
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.ArrayDeque;
+import java.util.Iterator;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 
@@ -23,7 +24,8 @@ public final class OracleBroker {
 
     private record Job(JsonObject json, long at) {}
 
-    private final LinkedBlockingQueue<Job> queue = new LinkedBlockingQueue<>();
+    /** Guarded by itself. A job waits here until a panel inspecting the job's origin polls (several tabs may poll). */
+    private final ArrayDeque<Job> queue = new ArrayDeque<>();
     private final Replier replier;
     private final LongSupplier clock;
     private volatile boolean enabled;
@@ -69,29 +71,72 @@ public final class OracleBroker {
             replier.reply(oid, false, null, "no browser is connected (DevTools CryptoTrace panel open, oracle switch on?)");
             return;
         }
-        queue.add(new Job(oracle, clock.getAsLong()));
+        synchronized (queue) {
+            queue.add(new Job(oracle, clock.getAsLong()));
+            queue.notifyAll();
+        }
+    }
+
+    /** "scheme://host[:port]" of a page URL, or "" when it has none. */
+    static String originOf(String url) {
+        if (url == null || url.isBlank()) return "";
+        try {
+            java.net.URI u = new java.net.URI(url.strip());
+            if (u.getScheme() == null || u.getHost() == null) return "";
+            return u.getScheme().toLowerCase() + "://" + u.getHost().toLowerCase() + (u.getPort() >= 0 ? ":" + u.getPort() : "");
+        } catch (java.net.URISyntaxException e) {
+            return "";
+        }
+    }
+
+    /** A job is for a panel when the page it was traced on has the panel's origin (or either side doesn't say). */
+    private static boolean forOrigin(Job j, String origin) {
+        if (origin == null || origin.isEmpty()) return true;
+        String f = j.json().has("frame") && !j.json().get("frame").isJsonNull() ? originOf(j.json().get("frame").getAsString()) : "";
+        return f.isEmpty() || f.equals(originOf(origin));
+    }
+
+    public JsonObject next(long waitMs) throws InterruptedException {
+        return next(waitMs, null);
     }
 
     /** The next job for the polling browser, waiting up to waitMs; null when none. Paces jobs by minIntervalMs. */
-    public JsonObject next(long waitMs) throws InterruptedException {
+    /** Like next(waitMs), for the panel inspecting `origin`: jobs traced on another origin stay for that tab. */
+    public JsonObject next(long waitMs, String origin) throws InterruptedException {
         lastPoll = clock.getAsLong();
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMs);
-        while (true) {
-            long left = deadline - System.nanoTime();
-            Job j = queue.poll(Math.max(0, left), TimeUnit.NANOSECONDS);
-            lastPoll = clock.getAsLong();
-            if (j == null) return null;
-            if (clock.getAsLong() - j.at() > STALE_MS) {
-                replier.reply(j.json().get("oid").getAsInt(), false, null, "the browser did not pick the job up in time");
-                continue;
+        Job j = null;
+        synchronized (queue) {
+            while (j == null) {
+                long now = clock.getAsLong();
+                for (Iterator<Job> it = queue.iterator(); it.hasNext(); ) {
+                    Job q = it.next();
+                    if (now - q.at() > STALE_MS) {
+                        it.remove();
+                        String f = q.json().has("frame") && !q.json().get("frame").isJsonNull() ? originOf(q.json().get("frame").getAsString()) : "";
+                        replier.reply(q.json().get("oid").getAsInt(), false, null, "the browser did not pick the job up in time"
+                                + (f.isEmpty() ? "" : " (is a DevTools CryptoTrace panel open on " + f + " with the oracle on?)"));
+                    } else if (j == null && forOrigin(q, origin)) {
+                        it.remove();
+                        j = q;
+                    }
+                }
+                if (j != null) break;
+                long left = deadline - System.nanoTime();
+                if (left <= 0) {
+                    lastPoll = clock.getAsLong();
+                    return null;
+                }
+                queue.wait(Math.max(1, TimeUnit.NANOSECONDS.toMillis(left)));
+                lastPoll = clock.getAsLong();
             }
-            synchronized (this) {
-                long wait = lastHanded + minIntervalMs - clock.getAsLong();
-                if (wait > 0) Thread.sleep(wait);
-                lastHanded = clock.getAsLong();
-            }
-            return j.json();
         }
+        synchronized (this) {
+            long wait = lastHanded + minIntervalMs - clock.getAsLong();
+            if (wait > 0) Thread.sleep(wait);
+            lastHanded = clock.getAsLong();
+        }
+        return j.json();
     }
 
     /** The browser's answer for job oid. */
@@ -100,7 +145,9 @@ public final class OracleBroker {
     }
 
     private void drain(String why) {
-        Job j;
-        while ((j = queue.poll()) != null) replier.reply(j.json().get("oid").getAsInt(), false, null, why);
+        synchronized (queue) {
+            Job j;
+            while ((j = queue.poll()) != null) replier.reply(j.json().get("oid").getAsInt(), false, null, why);
+        }
     }
 }

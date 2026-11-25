@@ -75,4 +75,25 @@ class OracleBrokerTest {
         assertNull(b.next(10));
         assertTrue(replies.get(0).startsWith("6:false:"), replies.toString());
     }
+
+    @Test
+    void jobsGoOnlyToThePanelOnTheirOrigin() throws Exception {
+        broker.enabled(true);
+        broker.minIntervalMs(0);
+        broker.next(1, "http://other.test");
+        broker.submit(job(7, "x")); // traced on http://app.test/
+        assertNull(broker.next(50, "http://other.test"), "another tab must not take it");
+        JsonObject j = broker.next(1000, "http://app.test");
+        assertNotNull(j);
+        assertEquals(7, j.get("oid").getAsInt());
+        assertTrue(replies.isEmpty());
+    }
+
+    @Test
+    void originOfNormalizes() {
+        assertEquals("http://app.test", OracleBroker.originOf("http://App.test/a/b?c"));
+        assertEquals("https://app.test:8443", OracleBroker.originOf("https://app.test:8443/"));
+        assertEquals("", OracleBroker.originOf(""));
+        assertEquals("", OracleBroker.originOf("about:blank"));
+    }
 }

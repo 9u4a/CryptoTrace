@@ -431,8 +431,10 @@ function renderDetail(rec) {
   if (rec.op === 'unknown') {
     // L3: trace the functions on this stack -- the next call records their input/output and key candidates.
     const btn = document.createElement('button');
-    btn.textContent = rec.traceArmed ? '추적 중 — 같은 기능을 다시 실행하세요' : '이 함수들 추적 (다음 호출의 입력·출력·키 후보 기록)';
-    btn.disabled = !!rec.traceArmed || !tracer;
+    // Re-arming stays possible: a page reload drops the registered functions (and the oracle stops tracing
+    // once it runs), so the analyst can trace again without closing DevTools.
+    btn.textContent = rec.traceArmed ? '다시 추적 (새로고침 후 오라클이 "not registered"이면)' : '이 함수들 추적 (다음 호출의 입력·출력·키 후보 기록)';
+    btn.disabled = !tracer;
     btn.onclick = async () => {
       btn.disabled = true;
       try {
@@ -486,6 +488,7 @@ hookBtn.onclick = async () => {
 
 el('clear').onclick = () => {
   records.length = 0;
+  originKeys.clear(); // let "unknown" rows appear again (e.g. to re-trace after a page reload)
   rowsEl.innerHTML = '';
   selected = null;
   lastDetail = '';
@@ -552,6 +555,16 @@ function oracleSay(state, msg, isErr) {
   oracleState = state;
   setStatus(msg, isErr);
 }
+// The inspected page's origin, so Burp routes this tab's jobs here (several tabs may run the oracle).
+function inspectedOrigin() {
+  return new Promise((resolve) => {
+    try {
+      chrome.devtools.inspectedWindow.eval('location.origin', (v, err) => resolve(!err && typeof v === 'string' && v !== 'null' ? v : ''));
+    } catch (_) {
+      resolve('');
+    }
+  });
+}
 const ORACLE_CALL_MS = 5000; // < Burp's stale limit (7 s) and the server's oracle timeout (8 s)
 async function oracleLoop() {
   if (oracleRunning) return;
@@ -559,7 +572,7 @@ async function oracleLoop() {
   try {
     while (el('oracleOn').checked) {
       if (!attached) { oracleSay('detached', '오라클: Hook ON 상태에서만 동작합니다', true); await sleep(2000); continue; }
-      const r = await CryptoTraceBridge.oracleNext(fetch, burp, 15000);
+      const r = await CryptoTraceBridge.oracleNext(fetch, burp, 8000, await inspectedOrigin());
       if (r.error) { oracleSay('err:' + r.error, '오라클: ' + r.error, true); await sleep(3000); continue; }
       if (!r.enabled) { oracleSay('off', '오라클: Burp > CryptoTrace > Options에서 Browser oracle을 켜세요', true); await sleep(3000); continue; }
       oracleSay('ready', '오라클 대기 중 (Burp가 재암호화할 때 페이지 함수를 호출합니다)');

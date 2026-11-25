@@ -68,21 +68,29 @@ public final class Bridge {
         stop();
         HttpServer s = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 0);
         s.createContext("/", this::handle);
-        // a few threads: the panel's oracle long-poll must not block config pushes
-        s.setExecutor(Executors.newFixedThreadPool(4, r -> {
+        // several threads: oracle long-polls (one per open panel) must not block config pushes or ping
+        java.util.concurrent.ExecutorService ex = Executors.newFixedThreadPool(8, r -> {
             Thread t = new Thread(r, "cryptotrace-bridge");
             t.setDaemon(true);
             return t;
-        }));
+        });
+        s.setExecutor(ex);
         s.start();
         http = s;
+        pool = ex;
         this.port = s.getAddress().getPort();
     }
+
+    private java.util.concurrent.ExecutorService pool;
 
     public synchronized void stop() {
         if (http != null) {
             http.stop(0);
             http = null;
+        }
+        if (pool != null) {
+            pool.shutdownNow(); // threads would otherwise outlive a bridge restart or the extension unload
+            pool = null;
         }
     }
 
@@ -114,13 +122,22 @@ public final class Bridge {
                     reply(ex, 200, o);
                     return;
                 }
-                long wait = 20_000;
-                String q = ex.getRequestURI().getQuery();
-                if (q != null && q.startsWith("wait=")) {
-                    try { wait = Math.max(0, Math.min(25_000, Long.parseLong(q.substring(5)))); } catch (NumberFormatException ignored) { }
+                long wait = 10_000;
+                String origin = null;
+                String q = ex.getRequestURI().getRawQuery();
+                if (q != null) {
+                    for (String kv : q.split("&")) {
+                        String[] p = kv.split("=", 2);
+                        String v = p.length == 2 ? java.net.URLDecoder.decode(p[1], java.nio.charset.StandardCharsets.UTF_8) : "";
+                        if ("wait".equals(p[0])) {
+                            try { wait = Math.max(0, Math.min(25_000, Long.parseLong(v))); } catch (NumberFormatException ignored) { }
+                        } else if ("origin".equals(p[0])) {
+                            origin = v;
+                        }
+                    }
                 }
                 try {
-                    JsonObject job = oracle.next(wait);
+                    JsonObject job = oracle.next(wait, origin);
                     if (job != null) o.add("job", job);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
