@@ -34,6 +34,15 @@ public final class ServerClient implements AutoCloseable {
     private final long timeoutMs;
     private Process process;
     private OutputStream stdin;
+    /** Lines to the server's stdin, written by a per-process writer thread: a full pipe never blocks a caller
+     *  while it holds this client's lock (the stdout reader needs that lock to answer oracle questions). */
+    private java.util.concurrent.BlockingQueue<byte[]> outQ;
+    /** Called (off any lock) when the process ends without close()/start() having replaced it: a crash. */
+    private volatile Consumer<String> onExit;
+
+    public void onExit(Consumer<String> listener) {
+        this.onExit = listener;
+    }
 
     public ServerClient(Consumer<String> log, long timeoutMs) {
         this.log = log;
@@ -47,13 +56,42 @@ public final class ServerClient implements AutoCloseable {
         ProcessBuilder pb = new ProcessBuilder(command);
         process = pb.start();
         stdin = process.getOutputStream();
+        outQ = new java.util.concurrent.LinkedBlockingQueue<>();
         Process p = process;
+        OutputStream os = stdin;
+        java.util.concurrent.BlockingQueue<byte[]> q = outQ;
         Thread out = new Thread(() -> readLoop(p), "cryptotrace-server-out");
         Thread err = new Thread(() -> errLoop(p), "cryptotrace-server-err");
+        Thread in = new Thread(() -> writeLoop(p, os, q), "cryptotrace-server-in");
         out.setDaemon(true);
         err.setDaemon(true);
+        in.setDaemon(true);
         out.start();
         err.start();
+        in.start();
+    }
+
+    private void writeLoop(Process p, OutputStream os, java.util.concurrent.BlockingQueue<byte[]> q) {
+        try {
+            while (p.isAlive()) {
+                byte[] b = q.poll(500, TimeUnit.MILLISECONDS);
+                if (b == null) continue;
+                os.write(b);
+                os.flush();
+            }
+        } catch (IOException e) {
+            if (p.isAlive()) {
+                log.accept("crypto server stdin failed: " + e.getMessage() + " - stopping it");
+                p.destroyForcibly(); // the reader then fails this process's pending calls
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** The server's process id, or -1 when not running. */
+    public synchronized long pid() {
+        return process != null ? process.pid() : -1;
     }
 
     public synchronized boolean isRunning() {
@@ -88,13 +126,25 @@ public final class ServerClient implements AutoCloseable {
         } catch (IOException ignored) {
             // process ended
         }
-        IOException gone = new IOException(exitReason(p));
+        String reason = exitReason(p);
+        IOException gone = new IOException(reason);
         for (Map.Entry<Integer, Process> e : pendingProc.entrySet()) {
             if (e.getValue() != p) continue; // a call to the restarted (new) process stays pending
             CompletableFuture<JsonObject> f = pending.remove(e.getKey());
             pendingProc.remove(e.getKey());
             if (f != null) f.completeExceptionally(gone);
         }
+        boolean crashed;
+        synchronized (this) {
+            crashed = process == p; // close()/start() clear or replace it first, so this is an unexpected exit
+            if (crashed) {
+                process = null;
+                stdin = null;
+                outQ = null;
+            }
+        }
+        Consumer<String> l = onExit;
+        if (crashed && l != null) l.accept(reason);
     }
 
     private void errLoop(Process p) {
@@ -144,11 +194,10 @@ public final class ServerClient implements AutoCloseable {
         try {
             byte[] line = (GSON.toJson(req) + "\n").getBytes(StandardCharsets.UTF_8);
             synchronized (this) {
-                if (process == null) throw new ServerException("crypto server is not running");
+                if (process == null || outQ == null) throw new ServerException("crypto server is not running");
                 pending.put(id, f);
                 pendingProc.put(id, process);
-                stdin.write(line);
-                stdin.flush();
+                outQ.add(line);
             }
             JsonObject res = f.get(timeoutMs, TimeUnit.MILLISECONDS);
             if (!res.has("ok") || !res.get("ok").getAsBoolean()) {
@@ -186,13 +235,11 @@ public final class ServerClient implements AutoCloseable {
         else o.addProperty("error", error);
         byte[] line = (GSON.toJson(o) + "\n").getBytes(StandardCharsets.UTF_8);
         synchronized (this) {
-            if (stdin == null) return;
-            try {
-                stdin.write(line);
-                stdin.flush();
-            } catch (IOException e) {
-                log.accept("oracle answer not delivered: " + e.getMessage());
+            if (outQ == null) {
+                log.accept("oracle answer not delivered: crypto server is not running");
+                return;
             }
+            outQ.add(line);
         }
     }
 
@@ -206,20 +253,25 @@ public final class ServerClient implements AutoCloseable {
 
     @Override
     public synchronized void close() {
-        if (process != null) {
+        Process p = process;
+        OutputStream os = stdin;
+        // cleared first: the reader sees its process is no longer current, so this exit isn't reported as a crash
+        process = null;
+        stdin = null;
+        outQ = null;
+        if (p != null) {
             try {
-                stdin.close();
+                os.close();
             } catch (IOException ignored) {
                 // already closed
             }
-            process.destroy();
+            p.destroy();
             try {
-                if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly();
+                if (!p.waitFor(2, TimeUnit.SECONDS)) p.destroyForcibly();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                process.destroyForcibly();
+                p.destroyForcibly();
             }
-            process = null;
         }
     }
 

@@ -59,6 +59,7 @@ public final class SettingsTab {
         });
         oracle.enabled(settings.oracleEnabled());
         oracle.minIntervalMs(settings.oracleIntervalMs());
+        server.onExit(this::onServerCrash);
         server.oracleSink(job -> {
             append("oracle #" + job.get("oid").getAsInt() + " asked: " + job.get("fn").getAsString().split("@")[0] + "() " + job.get("dir").getAsString());
             oracle.submit(job);
@@ -419,7 +420,7 @@ public final class SettingsTab {
         settings.configs(files);
         try {
             append("reloading " + files.size() + " config(s) into the running server");
-            return loadAndReport(files);
+            return loadAndReport(files, false);
         } catch (Exception e) {
             append("ERROR " + e.getMessage());
             setStatus(false, "reload failed: " + e.getMessage());
@@ -456,7 +457,7 @@ public final class SettingsTab {
             server.start(ServerClient.command(settings.launcher(), settings.script()));
             JsonObject health = server.call("health", null);
             append("server " + health.get("version").getAsString() + " started");
-            return loadAndReport(files);
+            return loadAndReport(files, true);
         } catch (Exception e) {
             append("ERROR " + e.getMessage());
             setStatus(false, "not running: " + e.getMessage());
@@ -464,10 +465,30 @@ public final class SettingsTab {
         }
     }
 
-    private boolean loadAndReport(List<String> files) throws ServerClient.ServerException {
+    /** Load files and log the result. Session keys captured so far survive: a reloaded server kept them itself,
+     *  a restarted one (freshStart) gets them pushed again, so the logged-in session keeps working. */
+    private boolean loadAndReport(List<String> files, boolean freshStart) throws ServerClient.ServerException {
+        List<SessionKeys.Capture> known = sessionKeys.pushed();
         JsonObject loaded = server.load(files);
         sessionKeys.setRules(loaded);
         if (!sessionKeys.isEmpty()) append("watching responses for " + sessionKeys.size() + " session key(s)");
+        int restored = 0;
+        for (SessionKeys.Capture c : known) {
+            if (freshStart) {
+                JsonObject args = new JsonObject();
+                args.addProperty("profile", c.profile());
+                args.addProperty("keyName", c.keyName());
+                args.addProperty("value", c.value());
+                try {
+                    server.call("key", args);
+                } catch (ServerClient.ServerException e) {
+                    continue; // that profile/key is gone from the configs
+                }
+                restored++;
+            }
+            sessionKeys.markPushed(c);
+        }
+        if (restored > 0) append("restored " + restored + " captured session key(s) into the new server");
         int bad = 0;
         for (JsonElement r : loaded.getAsJsonArray("results")) {
             JsonObject o = r.getAsJsonObject();
@@ -557,9 +578,45 @@ public final class SettingsTab {
 
     private void setStatus(boolean ok, String text) {
         lastStatus = text;
+        boolean down = !ok && text.startsWith("DOWN");
         SwingUtilities.invokeLater(() -> {
-            status.setText((ok ? "[ON] " : "[OFF] ") + text);
-            status.setForeground(ok ? new java.awt.Color(0x18, 0x80, 0x38) : java.awt.Color.GRAY);
+            status.setText((ok ? "[ON] " : down ? "[DOWN] " : "[OFF] ") + (down ? text.substring(4).strip() : text));
+            status.setForeground(ok ? new java.awt.Color(0x18, 0x80, 0x38) : down ? new java.awt.Color(0xc0, 0x20, 0x20) : java.awt.Color.GRAY);
         });
+    }
+
+    // Crash recovery: restart after 1 s, 2 s, 4 s; more than 3 crashes in 5 minutes means something is wrong
+    // with the config or launcher, so stop and leave it to the user (Start / Reload).
+    private static final int MAX_RESTARTS = 3;
+    private static final long RESTART_WINDOW_MS = 5 * 60_000L;
+    private final java.util.Deque<Long> restarts = new java.util.ArrayDeque<>();
+
+    private void onServerCrash(String reason) {
+        append("ERROR " + reason);
+        long now = System.currentTimeMillis();
+        int n;
+        synchronized (restarts) {
+            while (!restarts.isEmpty() && now - restarts.peekFirst() > RESTART_WINDOW_MS) restarts.pollFirst();
+            n = restarts.size();
+            if (n < MAX_RESTARTS) restarts.addLast(now);
+        }
+        if (n >= MAX_RESTARTS) {
+            setStatus(false, "DOWN - crashed " + MAX_RESTARTS + " times in 5 min; fix the cause, then Start / Reload. " + reason);
+            return;
+        }
+        long delay = 1000L << n;
+        setStatus(false, "DOWN - restarting in " + delay / 1000 + " s. " + reason);
+        Thread t = new Thread(() -> {
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException e) {
+                return;
+            }
+            if (server.isRunning()) return; // the user restarted it meanwhile
+            append("auto-restart " + (n + 1) + "/" + MAX_RESTARTS + " after a crash");
+            startServer();
+        }, "cryptotrace-restart");
+        t.setDaemon(true);
+        t.start();
     }
 }

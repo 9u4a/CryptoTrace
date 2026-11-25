@@ -101,4 +101,23 @@ class ServerClientTest {
         JsonObject res = client.call("encryptRequest", args);
         assertEquals("{\"z\":\"enc(hi)\"}", res.getAsJsonObject("request").get("body").getAsString());
     }
+
+    @Test
+    void aCrashIsReportedButACloseIsNot() throws Exception {
+        java.util.concurrent.CompletableFuture<String> exit = new java.util.concurrent.CompletableFuture<>();
+        client.onExit(exit::complete);
+        ProcessHandle.of(client.pid()).orElseThrow().destroyForcibly();
+        String reason = exit.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        assertTrue(reason.startsWith("crypto server exited"), reason);
+        assertFalse(client.isRunning());
+        assertThrows(ServerClient.ServerException.class, () -> client.call("health", null));
+
+        java.util.concurrent.CompletableFuture<String> second = new java.util.concurrent.CompletableFuture<>();
+        client.onExit(second::complete);
+        client.start(ServerClient.command("node", ROOT.resolve("server/src/main.mjs").toString()));
+        assertTrue(client.call("health", null).get("ok").getAsBoolean());
+        client.close();
+        Thread.sleep(2000);
+        assertFalse(second.isDone(), "close() must not be reported as a crash");
+    }
 }

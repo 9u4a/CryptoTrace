@@ -76,4 +76,19 @@ class SessionKeysTest {
         sk.setRules(loadResult("\"captures\":[]"));
         assertTrue(sk.isEmpty());
     }
+
+    @Test
+    void pushedValuesSurviveSetRulesViaMarkPushed() {
+        SessionKeys sk = new SessionKeys();
+        String rules = "\"captures\":[{\"keyName\":\"sk\",\"jsonPath\":\"$.key\"}]";
+        sk.setRules(loadResult(rules));
+        String body = "{\"key\":\"K1\"}";
+        assertEquals(1, sk.extract("https://api.test/x", body, n -> null).size());
+        List<SessionKeys.Capture> known = sk.pushed();
+        assertEquals(List.of(new SessionKeys.Capture("p", "sk", "K1")), known);
+
+        sk.setRules(loadResult(rules)); // reload forgets...
+        known.forEach(sk::markPushed);   // ...until the carried-over values are marked again
+        assertTrue(sk.extract("https://api.test/x", body, n -> null).isEmpty(), "same key must not be pushed twice");
+    }
 }
