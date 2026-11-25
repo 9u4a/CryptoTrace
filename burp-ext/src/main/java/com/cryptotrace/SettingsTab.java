@@ -352,7 +352,9 @@ public final class SettingsTab {
         sink = lines;
         boolean ok;
         try {
-            ok = startServer();
+            // A running server only reloads its configs: restarting would fail in-flight Intruder/Scanner calls
+            // and drop session keys captured since the last start.
+            ok = server.isRunning() ? reloadConfigs() : startServer();
         } finally {
             sink = null;
         }
@@ -398,17 +400,36 @@ public final class SettingsTab {
         return out;
     }
 
-    /** Persist the form, (re)start the server process and load configs. Runs off the EDT. */
-    public synchronized boolean startServer() {
+    /** The config list minus files that no longer exist (moved / deleted): those are dropped with a warning
+     *  instead of failing the whole load. */
+    private List<String> presentConfigs() {
         List<String> files = new ArrayList<>(Collections.list(configs.elements()));
-        // A config file that no longer exists (moved / deleted) must not block loading the others:
-        // drop it from the list with a warning instead of failing the whole start.
         List<String> missing = missingConfigs(files);
         if (!missing.isEmpty()) {
             files.removeAll(missing);
             for (String m : missing) append("WARN config not found, removed from the list: " + m);
             SwingUtilities.invokeLater(() -> missing.forEach(configs::removeElement));
         }
+        return files;
+    }
+
+    /** Load the config list into the running server without restarting it (session keys are kept). */
+    public synchronized boolean reloadConfigs() {
+        List<String> files = presentConfigs();
+        settings.configs(files);
+        try {
+            append("reloading " + files.size() + " config(s) into the running server");
+            return loadAndReport(files);
+        } catch (Exception e) {
+            append("ERROR " + e.getMessage());
+            setStatus(false, "reload failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Persist the form, (re)start the server process and load configs. Runs off the EDT. */
+    public synchronized boolean startServer() {
+        List<String> files = presentConfigs();
         String l = Settings.unquote(launcher.getText());
         String s = Settings.unquote(script.getText());
         if (l.toLowerCase().matches(".*\\.(mjs|js)$")) { // script pasted into the launcher field
@@ -435,64 +456,69 @@ public final class SettingsTab {
             server.start(ServerClient.command(settings.launcher(), settings.script()));
             JsonObject health = server.call("health", null);
             append("server " + health.get("version").getAsString() + " started");
-            JsonObject loaded = server.load(files);
-            sessionKeys.setRules(loaded);
-            if (!sessionKeys.isEmpty()) append("watching responses for " + sessionKeys.size() + " session key(s)");
-            int bad = 0;
-            for (JsonElement r : loaded.getAsJsonArray("results")) {
-                JsonObject o = r.getAsJsonObject();
-                if (o.has("error")) {
-                    bad++;
-                    append("ERROR " + o.get("file").getAsString() + ": " + o.get("error").getAsString());
-                    continue;
-                }
-                StringBuilder sb = new StringBuilder("loaded " + o.get("profile").getAsString() + " - selftest:");
-                if (o.getAsJsonArray("selftest").isEmpty()) sb.append(" (no vectors)");
-                for (JsonElement t : o.getAsJsonArray("selftest")) {
-                    JsonObject tt = t.getAsJsonObject();
-                    boolean ok = tt.get("ok").getAsBoolean();
-                    if (!ok) bad++;
-                    sb.append(' ').append(tt.get("cipher").getAsString()).append('=')
-                            .append(ok ? "OK" : "FAIL(" + tt.get("error").getAsString() + ")");
-                }
-                append(sb.toString());
-                if (o.has("scope") && !o.get("scope").isJsonNull()) {
-                    StringBuilder sc = new StringBuilder("  scope:");
-                    for (JsonElement se : o.getAsJsonArray("scope")) {
-                        JsonObject so = se.getAsJsonObject();
-                        sc.append(' ').append(so.get("host").getAsString());
-                        if (so.has("port") && !so.get("port").isJsonNull()) sc.append(':').append(so.get("port").getAsString());
-                        String pr = so.get("pathRegex").getAsString();
-                        if (!".*".equals(pr)) sc.append(" path=").append(pr);
-                    }
-                    append(sc.toString());
-                }
-                if (o.has("warnings") && !o.get("warnings").isJsonNull()) {
-                    for (JsonElement w : o.getAsJsonArray("warnings")) append("  WARN " + w.getAsString());
-                }
-                // ciphers the server identified from a traced page function's candidates (0.5.0)
-                if (o.has("identified") && o.get("identified").isJsonArray()) {
-                    for (JsonElement ie : o.getAsJsonArray("identified")) {
-                        JsonObject id = ie.getAsJsonObject();
-                        StringBuilder line = new StringBuilder("  IDENTIFIED ").append(id.get("cipher").getAsString())
-                                .append(" = ").append(id.get("alg").getAsString()).append(" key=").append(id.get("key").getAsString());
-                        if (id.has("iv") && id.get("iv").isJsonObject()) {
-                            JsonObject iv = id.getAsJsonObject("iv");
-                            line.append(" iv=").append(iv.has("from") ? "from-" + iv.get("from").getAsString()
-                                    : iv.get("encoding").getAsString() + ":" + iv.get("value").getAsString());
-                        }
-                        line.append(" padding=").append(id.get("padding").getAsString());
-                        append(line.toString());
-                    }
-                }
-            }
-            setStatus(bad == 0, bad == 0 ? "running - " + files.size() + " config(s)" : "running with " + bad + " problem(s) - see log");
-            return bad == 0;
+            return loadAndReport(files);
         } catch (Exception e) {
             append("ERROR " + e.getMessage());
             setStatus(false, "not running: " + e.getMessage());
             return false;
         }
+    }
+
+    private boolean loadAndReport(List<String> files) throws ServerClient.ServerException {
+        JsonObject loaded = server.load(files);
+        sessionKeys.setRules(loaded);
+        if (!sessionKeys.isEmpty()) append("watching responses for " + sessionKeys.size() + " session key(s)");
+        int bad = 0;
+        for (JsonElement r : loaded.getAsJsonArray("results")) {
+            JsonObject o = r.getAsJsonObject();
+            if (o.has("error")) {
+                bad++;
+                append("ERROR " + o.get("file").getAsString() + ": " + o.get("error").getAsString());
+                continue;
+            }
+            StringBuilder sb = new StringBuilder("loaded " + o.get("profile").getAsString() + " - selftest:");
+            if (o.has("sessionKeysKept")) append("  kept " + o.get("sessionKeysKept").getAsInt() + " captured session key(s)");
+            if (o.getAsJsonArray("selftest").isEmpty()) sb.append(" (no vectors)");
+            for (JsonElement t : o.getAsJsonArray("selftest")) {
+                JsonObject tt = t.getAsJsonObject();
+                boolean ok = tt.get("ok").getAsBoolean();
+                if (!ok) bad++;
+                sb.append(' ').append(tt.get("cipher").getAsString()).append('=')
+                        .append(ok ? "OK" : "FAIL(" + tt.get("error").getAsString() + ")");
+            }
+            append(sb.toString());
+            if (o.has("scope") && !o.get("scope").isJsonNull()) {
+                StringBuilder sc = new StringBuilder("  scope:");
+                for (JsonElement se : o.getAsJsonArray("scope")) {
+                    JsonObject so = se.getAsJsonObject();
+                    sc.append(' ').append(so.get("host").getAsString());
+                    if (so.has("port") && !so.get("port").isJsonNull()) sc.append(':').append(so.get("port").getAsString());
+                    String pr = so.get("pathRegex").getAsString();
+                    if (!".*".equals(pr)) sc.append(" path=").append(pr);
+                }
+                append(sc.toString());
+            }
+            if (o.has("warnings") && !o.get("warnings").isJsonNull()) {
+                for (JsonElement w : o.getAsJsonArray("warnings")) append("  WARN " + w.getAsString());
+            }
+            // ciphers the server identified from a traced page function's candidates (0.5.0)
+            if (o.has("identified") && o.get("identified").isJsonArray()) {
+                for (JsonElement ie : o.getAsJsonArray("identified")) {
+                    JsonObject id = ie.getAsJsonObject();
+                    StringBuilder line = new StringBuilder("  IDENTIFIED ").append(id.get("cipher").getAsString())
+                            .append(" = ").append(id.get("alg").getAsString()).append(" key=").append(id.get("key").getAsString());
+                    if (id.has("iv") && id.get("iv").isJsonObject()) {
+                        JsonObject iv = id.getAsJsonObject("iv");
+                        line.append(" iv=").append(iv.has("from") ? "from-" + iv.get("from").getAsString()
+                                : iv.get("encoding").getAsString() + ":" + iv.get("value").getAsString());
+                    }
+                    line.append(" padding=").append(id.get("padding").getAsString());
+                    append(line.toString());
+                }
+            }
+        }
+        setStatus(bad == 0, bad == 0 ? "running - " + files.size() + " config(s)" : "running with " + bad + " problem(s) - see log");
+        return bad == 0;
     }
 
     static List<String> missingConfigs(List<String> files) {

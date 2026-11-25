@@ -179,6 +179,12 @@ test('session key: pending until captured, then decrypts; op "key" sets it', () 
 
   // A non-session key cannot be set this way.
   assert.throws(() => eng.handle({ op: 'key', profile: 'sess', keyName: 'nope', value: 'x' }), /not a session key/);
+
+  // Reloading (Send to Burp pushes a new config) keeps the captured session key.
+  const reloaded = eng.handle({ op: 'load', files: [file] }).results[0];
+  assert.equal(reloaded.sessionKeysKept, 1);
+  const again = eng.handle({ op: 'decryptRequest', host: 'api.test', port: 443, request: { headers: [], body, path: '/x' } });
+  assert.equal(again.applied[0].ok, true, JSON.stringify(again.applied));
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

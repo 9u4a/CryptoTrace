@@ -186,6 +186,23 @@
   // A traced page function (tracer.js): its algorithm is unknown, so the cipher becomes an `identify` grid --
   // every block cipher that fits the byte-sized values found in its scopes -- and the server keeps the
   // combination that reproduces the captured calls (server/src/identify.mjs).
+  // Selftest vectors per cipher: every captured call would add one, so a long session would grow the config
+  // toward the bridge's 5 MB limit and change it on every capture. Keep the first (oldest, so the config is
+  // stable) distinct few per cipher.
+  const SELFTEST_PER_CIPHER = 5;
+  function capSelftest(list) {
+    const seen = new Set();
+    const count = {};
+    return list.filter((v) => {
+      const k = JSON.stringify([v.cipher, v.plain, v.ciphertext, v.iv]);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      count[v.cipher] = (count[v.cipher] || 0) + 1;
+      return count[v.cipher] <= SELFTEST_PER_CIPHER;
+    });
+  }
+  window.capSelftest = capSelftest;
+
   function candLen(v) {
     if (!v || v.value == null) return 0;
     if (v.encoding === 'base64') { const b = b64Bytes(v.value); return b ? b.length : 0; }
@@ -437,6 +454,8 @@
         cfg.selftest.push(vec);
       }
     }
+
+    cfg.selftest = capSelftest(cfg.selftest);
 
     for (const n of wsNotes) cfg._notes.push(n);
 

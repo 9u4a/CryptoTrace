@@ -649,3 +649,20 @@ test('a traced function that is not a standard cipher falls back to the browser 
   assert.equal(res.error, undefined, res.error);
   assert.deepEqual(JSON.parse(JSON.stringify(res.oracles)), [{ cipher: 'c1', fn: 'scramble@http://127.0.0.1:8089/cov/x:3:7' }]);
 });
+
+test('selftest vectors are capped per cipher and deduplicated (long sessions, auto-send)', () => {
+  const src = fs.readFileSync(path.join(HERE, '../config-builder.js'), 'utf8');
+  const sandbox = { window: {}, URL, Date };
+  vm.runInNewContext(src, sandbox);
+  const cap = sandbox.window.capSelftest;
+  const v = (cipher, n) => ({ cipher, plain: `{"n":${n}}`, ciphertext: `ct${n}` });
+  const list = [];
+  for (let i = 0; i < 12; i++) list.push(v('c1', i));
+  list.push(v('c1', 0)); // the same call again
+  list.push(v('c2', 0));
+  const out = cap(list);
+  assert.equal(out.filter((x) => x.cipher === 'c1').length, 5);
+  assert.equal(out.filter((x) => x.cipher === 'c2').length, 1);
+  // The oldest vectors are kept, so later captures don't change the config (auto-send stays quiet).
+  assert.deepEqual(out.filter((x) => x.cipher === 'c1').map((x) => x.plain), [0, 1, 2, 3, 4].map((n) => `{"n":${n}}`));
+});
