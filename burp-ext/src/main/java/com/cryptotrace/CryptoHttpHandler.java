@@ -71,7 +71,8 @@ public final class CryptoHttpHandler implements HttpHandler {
         api.logging().logToError(note + " - " + req.url());
         // Intruder/Scanner hide annotations by default: also tell the CryptoTrace tab (repeats folded into a count)
         java.util.function.Consumer<String> sink = blockedSink;
-        if (sink != null) sink.accept(why);
+        // with the target, so "no profile matches" can be checked against the loaded scopes
+        if (sink != null) sink.accept(why + " - " + req.method() + " " + req.httpService().host() + ":" + req.httpService().port() + req.path());
         return RequestToBeSentAction.continueWith(req.withService(BLACKHOLE), req.annotations().withNotes(note));
     }
 
