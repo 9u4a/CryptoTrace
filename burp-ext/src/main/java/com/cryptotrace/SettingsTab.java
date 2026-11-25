@@ -435,7 +435,16 @@ public final class SettingsTab {
     }
 
     /** Persist the form, (re)start the server process and load configs. Runs off the EDT. */
+    private boolean shutDown;
+
+    /** Extension unload: waits for a start in progress (both synchronized), so no server process is left running. */
+    public synchronized void shutdown() {
+        shutDown = true;
+        server.close();
+    }
+
     public synchronized boolean startServer() {
+        if (shutDown) return false;
         List<String> files = presentConfigs();
         String l = Settings.unquote(launcher.getText());
         String s = Settings.unquote(script.getText());
@@ -572,6 +581,26 @@ public final class SettingsTab {
     }
 
     private static final int MAX_LOG_LINES = 5000;
+
+    // Blocked requests (never sent in plaintext): shown in the log, a reason repeated within 10 s folded into a count.
+    private String lastBlocked = "";
+    private long lastBlockedAt;
+    private int blockedRepeats;
+    private int blockedTotal;
+
+    public synchronized void blocked(String why) {
+        blockedTotal++;
+        long now = System.currentTimeMillis();
+        if (why.equals(lastBlocked) && now - lastBlockedAt < 10_000) {
+            blockedRepeats++;
+            return;
+        }
+        if (blockedRepeats > 0) append("BLOCKED x" + blockedRepeats + " more (same reason)");
+        lastBlocked = why;
+        lastBlockedAt = now;
+        blockedRepeats = 0;
+        append("BLOCKED (not sent, total " + blockedTotal + "): " + why);
+    }
 
     /** Keep the log area bounded over a long session (drop the oldest lines). EDT only. */
     private void trimLog() {

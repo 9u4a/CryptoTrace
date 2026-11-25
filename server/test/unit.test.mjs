@@ -664,3 +664,12 @@ test('errorText never loses the reason of a thrown non-Error', async () => {
   assert.equal(errorText(undefined), 'undefined');
   assert.equal(errorText({}), '[object Object]');
 });
+
+test('scopesOverlap: no port vs a port, catch-all path vs a narrower one, wildcard hosts', async () => {
+  const { scopesOverlap } = await import('../src/engine.mjs');
+  assert.equal(scopesOverlap({ host: 'a.test', port: null, pathRegex: '.*' }, { host: 'a.test', port: 443, pathRegex: '^/api' }), true);
+  assert.equal(scopesOverlap({ host: '*.a.test', port: 443, pathRegex: '^/api' }, { host: 'www.a.test', port: 443, pathRegex: '^/api' }), true);
+  assert.equal(scopesOverlap({ host: 'a.test', port: 443, pathRegex: '^/api' }, { host: 'a.test', port: 443, pathRegex: '^/auth' }), false);
+  assert.equal(scopesOverlap({ host: 'a.test', port: 80, pathRegex: '.*' }, { host: 'a.test', port: 443, pathRegex: '.*' }), false);
+  assert.equal(scopesOverlap({ host: 'a.test', port: null, pathRegex: '.*' }, { host: 'b.test', port: null, pathRegex: '.*' }), false);
+});

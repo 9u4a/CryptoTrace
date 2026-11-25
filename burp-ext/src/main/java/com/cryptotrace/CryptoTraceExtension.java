@@ -24,12 +24,14 @@ public final class CryptoTraceExtension implements BurpExtension {
         api.userInterface().registerHttpRequestEditorProvider(PlainEditors.requests(api, crypto));
         api.userInterface().registerHttpResponseEditorProvider(PlainEditors.responses(api, crypto));
         api.userInterface().registerContextMenuItemsProvider(new PlainContextMenu(api, crypto));
-        api.http().registerHttpHandler(new CryptoHttpHandler(api, crypto, settings, server, sessionKeys));
+        CryptoHttpHandler handler = new CryptoHttpHandler(api, crypto, settings, server, sessionKeys);
+        handler.onBlocked(tab[0]::blocked);
+        api.http().registerHttpHandler(handler);
         api.scanner().registerInsertionPointProvider(new PlainInsertionPoints(api, crypto));
         SettingsTab settingsTab = tab[0];
         api.extension().registerUnloadingHandler(() -> {
             settingsTab.stopBridge();
-            server.close();
+            settingsTab.shutdown();
         });
         settingsTab.restartBridge();   // browser bridge: Send to Burp from the DevTools panel
 

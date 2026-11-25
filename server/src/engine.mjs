@@ -4,6 +4,24 @@ import { transform, PLAIN_MARKER, errorText } from './message.mjs';
 
 export const VERSION = '0.2.0';
 
+// Could some request fall in both scopes? Hosts equal (or one wildcard covers the other), ports compatible,
+// and paths not provably disjoint (equal, or one matches everything).
+const ANY_PATH = new Set(['', '.*', '^.*', '^/', '/']);
+function hostsMeet(a, b) {
+  const base = (h) => (h.startsWith('*.') ? h.slice(2) : h.startsWith('.') ? h.slice(1) : null);
+  if (a === b) return true;
+  const ba = base(a);
+  const bb = base(b);
+  return (ba != null && (b === ba || b.endsWith('.' + ba))) || (bb != null && (a === bb || a.endsWith('.' + bb)));
+}
+export function scopesOverlap(s, t) {
+  if (!hostsMeet(String(s.host || '').toLowerCase(), String(t.host || '').toLowerCase())) return false;
+  if (s.port != null && t.port != null && s.port !== t.port) return false;
+  const ps = s.pathRegex ?? '.*';
+  const pt = t.pathRegex ?? '.*';
+  return ps === pt || ANY_PATH.has(ps) || ANY_PATH.has(pt);
+}
+
 export function createEngine() {
   let profiles = [];
   // Session keys captured at runtime, re-applied after a reload so a config pushed from the browser (Send to
@@ -36,9 +54,14 @@ export function createEngine() {
           const key = (s) => `${s.host}:${s.port ?? '*'}|${s.pathRegex}`;
           const shadow = loaded.find((q) => q.scope.some((s) => p.scope.some((t) => key(s) === key(t))));
           const warnings = [...(p.warnings || [])];
+          const where = (s) => `${s.host}${s.port != null ? ':' + s.port : ''}`;
+          if (!p.scope.length) warnings.push('scope is empty: this profile never matches a request');
           if (shadow) {
-            const s = p.scope[0];
-            warnings.push(`same scope as "${shadow.name}" (${s.host}${s.port != null ? ':' + s.port : ''}): the first loaded profile wins, so this one is not used -- remove the older config`);
+            warnings.push(`same scope as "${shadow.name}" (${where(p.scope[0])}): the first loaded profile wins, so this one is not used -- remove the older config`);
+          } else {
+            // Not identical but overlapping (no port vs 443, ".*" vs "^/api"): requests in both go to the earlier one.
+            const over = loaded.find((q) => q.scope.some((s) => p.scope.some((t) => scopesOverlap(s, t))));
+            if (over) warnings.push(`overlaps "${over.name}" (${where(p.scope[0])}): requests in both scopes go to "${over.name}" (loaded first)`);
           }
           loaded.push(p);
           const scope = p.scope.map((s) => ({ host: s.host, port: s.port, pathRegex: s.pathRegex }));

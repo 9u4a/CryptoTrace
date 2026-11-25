@@ -69,6 +69,9 @@ public final class CryptoHttpHandler implements HttpHandler {
         }
         String note = "CryptoTrace BLOCKED (not sent): " + why;
         api.logging().logToError(note + " - " + req.url());
+        // Intruder/Scanner hide annotations by default: also tell the CryptoTrace tab (repeats folded into a count)
+        java.util.function.Consumer<String> sink = blockedSink;
+        if (sink != null) sink.accept(why);
         return RequestToBeSentAction.continueWith(req.withService(BLACKHOLE), req.annotations().withNotes(note));
     }
 
@@ -81,12 +84,35 @@ public final class CryptoHttpHandler implements HttpHandler {
         }
         try {
             Crypto.Result<HttpResponse> dec = crypto.decryptResponse(res.initiatingRequest(), res);
-            if (dec.matched() == null || !dec.allOk()) return ResponseReceivedAction.continueWith(res);
+            if (dec.matched() == null) return ResponseReceivedAction.continueWith(res);
+            if (!dec.allOk()) {
+                logRateLimited("CryptoTrace response not decrypted (shown as received): " + dec.errors());
+                return ResponseReceivedAction.continueWith(res);
+            }
             return ResponseReceivedAction.continueWith(dec.message().withAddedHeader(DECRYPTED_MARKER, "1"));
-        } catch (ServerClient.ServerException e) {
-            api.logging().logToError("CryptoTrace response decrypt failed: " + e.getMessage());
+        } catch (ServerClient.ServerException | RuntimeException e) {
+            logRateLimited("CryptoTrace response decrypt failed: " + Crypto.reason(e));
             return ResponseReceivedAction.continueWith(res);
         }
+    }
+
+    /** Called with the reason of every blocked request (the CryptoTrace tab shows them). */
+    private volatile java.util.function.Consumer<String> blockedSink;
+
+    public void onBlocked(java.util.function.Consumer<String> sink) {
+        this.blockedSink = sink;
+    }
+
+    private final Map<String, Long> lastLogged = new ConcurrentHashMap<>();
+
+    /** The same message at most once per 30 s (an Intruder run would otherwise flood the error log). */
+    private void logRateLimited(String msg) {
+        long now = System.currentTimeMillis();
+        Long prev = lastLogged.get(msg);
+        if (prev != null && now - prev < 30_000) return;
+        if (lastLogged.size() > 200) lastLogged.clear();
+        lastLogged.put(msg, now);
+        api.logging().logToError(msg);
     }
 
     private void remember(HttpRequestToBeSent req) {
