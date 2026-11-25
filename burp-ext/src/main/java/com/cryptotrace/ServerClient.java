@@ -185,6 +185,11 @@ public final class ServerClient implements AutoCloseable {
 
     /** Send one op and wait for its reply. Throws on transport failure, timeout, or {"ok": false}. */
     public JsonObject call(String op, JsonObject args) throws ServerException {
+        return call(op, args, timeoutMs);
+    }
+
+    /** call() with its own timeout (the editor tabs wait less than the HTTP pipeline). */
+    public JsonObject call(String op, JsonObject args, long timeoutMs) throws ServerException {
         if (!isRunning()) throw new ServerException("crypto server is not running");
         int id = seq.incrementAndGet();
         JsonObject req = args == null ? new JsonObject() : args.deepCopy();

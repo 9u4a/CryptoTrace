@@ -15,9 +15,10 @@ public final class CryptoTraceExtension implements BurpExtension {
             api.logging().logToOutput(line);
             if (tab[0] != null) tab[0].append(line);
         }, 12000); // > the server's 8 s wait for a browser-oracle answer
-        Crypto crypto = new Crypto(server);
+        Scopes scopes = new Scopes();
+        Crypto crypto = new Crypto(server, scopes);
         SessionKeys sessionKeys = new SessionKeys();
-        tab[0] = new SettingsTab(settings, server, sessionKeys);
+        tab[0] = new SettingsTab(settings, server, sessionKeys, scopes);
 
         api.userInterface().registerSuiteTab("CryptoTrace", tab[0].component());
         api.userInterface().registerHttpRequestEditorProvider(PlainEditors.requests(api, crypto));

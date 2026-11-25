@@ -77,18 +77,16 @@ public final class PlainEditors {
         @Override
         public boolean isEnabledFor(HttpRequestResponse rr) {
             if (nested) return false;
-            try {
-                return rr.request() != null && crypto.decryptRequest(rr.request()).matched() != null;
-            } catch (ServerClient.ServerException e) {
-                return false;
-            }
+            // Local scope check: Burp calls this on its UI thread for every message shown. If the server is down,
+            // the tab still appears and says so (instead of silently vanishing).
+            return rr.request() != null && crypto.inScope(rr.request());
         }
 
         @Override
         public void setRequestResponse(HttpRequestResponse rr) {
             current = rr;
             try {
-                decrypted = crypto.decryptRequest(rr.request());
+                decrypted = crypto.decryptRequestForUi(rr.request());
                 HttpRequest shown = decrypted.message();
                 editor.setRequest(decrypted.allOk() ? shown : shown.withAddedHeader(ERROR_HEADER, oneLine(decrypted.errors())));
             } catch (ServerClient.ServerException e) {
@@ -173,18 +171,14 @@ public final class PlainEditors {
             if (rr.request() == null || rr.response() == null) return false;
             // Already decrypted in flight by CryptoHttpHandler: the normal Response tab shows plaintext.
             if (rr.response().hasHeader(CryptoHttpHandler.DECRYPTED_MARKER)) return false;
-            try {
-                return crypto.decryptResponse(rr.request(), rr.response()).matched() != null;
-            } catch (ServerClient.ServerException e) {
-                return false;
-            }
+            return crypto.inScope(rr.request());
         }
 
         @Override
         public void setRequestResponse(HttpRequestResponse rr) {
             current = rr;
             try {
-                Crypto.Result<HttpResponse> dec = crypto.decryptResponse(rr.request(), rr.response());
+                Crypto.Result<HttpResponse> dec = crypto.decryptResponseForUi(rr.request(), rr.response());
                 HttpResponse shown = dec.message();
                 editor.setResponse(dec.allOk() ? shown : shown.withAddedHeader(ERROR_HEADER, oneLine(dec.errors())));
             } catch (ServerClient.ServerException e) {

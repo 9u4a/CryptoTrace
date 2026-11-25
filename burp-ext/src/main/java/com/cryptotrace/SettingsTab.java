@@ -49,6 +49,11 @@ public final class SettingsTab {
     private final JCheckBox decryptResponses = new JCheckBox();
 
     public SettingsTab(Settings settings, ServerClient server, SessionKeys sessionKeys) {
+        this(settings, server, sessionKeys, new Scopes());
+    }
+
+    public SettingsTab(Settings settings, ServerClient server, SessionKeys sessionKeys, Scopes scopes) {
+        this.scopes = scopes;
         this.settings = settings;
         this.server = server;
         this.sessionKeys = sessionKeys;
@@ -68,6 +73,7 @@ public final class SettingsTab {
     }
 
     private final OracleBroker oracle;
+    private final Scopes scopes;
     private final JCheckBox oracleEnabled = new JCheckBox();
     private final JTextField oracleInterval = new JTextField(5);
 
@@ -471,6 +477,7 @@ public final class SettingsTab {
         List<SessionKeys.Capture> known = sessionKeys.pushed();
         JsonObject loaded = server.load(files);
         sessionKeys.setRules(loaded);
+        scopes.set(loaded);
         if (!sessionKeys.isEmpty()) append("watching responses for " + sessionKeys.size() + " session key(s)");
         int restored = 0;
         for (SessionKeys.Capture c : known) {

@@ -22,9 +22,70 @@ public final class Crypto {
     public static final String PLAIN_MARKER = "X-CT-Plain";
 
     private final ServerClient server;
+    private final Scopes scopes;
+    /** Editor tabs call from Burp's UI thread: they wait at most this long, never the 12 s pipeline timeout. */
+    static final long UI_TIMEOUT_MS = 3000;
+    private static final int CACHE_SIZE = 256;
+    /** Successful decrypts for the editor tabs, so clicking through Proxy history doesn't re-ask the server. */
+    private final Map<String, Result<?>> cache = java.util.Collections.synchronizedMap(
+            new java.util.LinkedHashMap<>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Result<?>> e) {
+                    return size() > CACHE_SIZE;
+                }
+            });
 
     public Crypto(ServerClient server) {
+        this(server, new Scopes());
+    }
+
+    public Crypto(ServerClient server, Scopes scopes) {
         this.server = server;
+        this.scopes = scopes;
+    }
+
+    /** Whether any loaded profile covers this request -- local check, no server call. */
+    public boolean inScope(HttpRequest req) {
+        return req != null && req.httpService() != null
+                && scopes.matches(req.httpService().host(), req.httpService().port(), req.path());
+    }
+
+    /** decryptRequest for the editor tab: cached, short timeout. */
+    @SuppressWarnings("unchecked")
+    public Result<HttpRequest> decryptRequestForUi(HttpRequest req) throws ServerClient.ServerException {
+        String key = cacheKey("rq", req, null);
+        Result<?> hit = cache.get(key);
+        if (hit != null) return (Result<HttpRequest>) hit;
+        Result<HttpRequest> r = requestOp("decryptRequest", req, false, UI_TIMEOUT_MS);
+        if (r.matched() != null && r.allOk()) cache.put(key, r); // errors (e.g. key not captured yet) may clear up
+        return r;
+    }
+
+    /** decryptResponse for the editor tab: cached, short timeout. */
+    @SuppressWarnings("unchecked")
+    public Result<HttpResponse> decryptResponseForUi(HttpRequest req, HttpResponse res) throws ServerClient.ServerException {
+        String key = cacheKey("rs", req, res);
+        Result<?> hit = cache.get(key);
+        if (hit != null) return (Result<HttpResponse>) hit;
+        Result<HttpResponse> r = responseOp("decryptResponse", req, res, UI_TIMEOUT_MS);
+        if (r.matched() != null && r.allOk()) cache.put(key, r);
+        return r;
+    }
+
+    private String cacheKey(String kind, HttpRequest req, HttpResponse res) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            md.update((kind + "|" + scopes.generation() + "|" + req.httpService().host() + "|" + req.httpService().port() + "|")
+                    .getBytes(StandardCharsets.UTF_8));
+            md.update(req.toByteArray().getBytes());
+            if (res != null) {
+                md.update((byte) 0);
+                md.update(res.toByteArray().getBytes());
+            }
+            return java.util.HexFormat.of().formatHex(md.digest());
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /** Result of a transform. `matched` is the profile name or null when out of scope. */
@@ -85,6 +146,10 @@ public final class Crypto {
     }
 
     private Result<HttpRequest> requestOp(String op, HttpRequest req, boolean noOracle) throws ServerClient.ServerException {
+        return requestOp(op, req, noOracle, -1);
+    }
+
+    private Result<HttpRequest> requestOp(String op, HttpRequest req, boolean noOracle, long timeoutMs) throws ServerClient.ServerException {
         JsonObject msg = new JsonObject();
         msg.addProperty("path", req.path());
         msg.add("headers", headersJson(req.headers()));
@@ -92,7 +157,7 @@ public final class Crypto {
         JsonObject args = target(req);
         args.add("request", msg);
         if (noOracle) args.addProperty("noOracle", true);
-        JsonObject res = server.call(op, args);
+        JsonObject res = timeoutMs > 0 ? server.call(op, args, timeoutMs) : server.call(op, args);
         String matched = res.get("matched").isJsonNull() ? null : res.get("matched").getAsString();
         JsonObject out = res.getAsJsonObject("request");
         HttpRequest rebuilt = req;
@@ -131,13 +196,17 @@ public final class Crypto {
     }
 
     private Result<HttpResponse> responseOp(String op, HttpRequest req, HttpResponse resp) throws ServerClient.ServerException {
+        return responseOp(op, req, resp, -1);
+    }
+
+    private Result<HttpResponse> responseOp(String op, HttpRequest req, HttpResponse resp, long timeoutMs) throws ServerClient.ServerException {
         JsonObject msg = new JsonObject();
         msg.add("headers", headersJson(resp.headers()));
         putBody(msg, resp.body());
         JsonObject args = target(req);
         args.addProperty("path", req.path());
         args.add("response", msg);
-        JsonObject res = server.call(op, args);
+        JsonObject res = timeoutMs > 0 ? server.call(op, args, timeoutMs) : server.call(op, args);
         String matched = res.get("matched").isJsonNull() ? null : res.get("matched").getAsString();
         JsonObject out = res.getAsJsonObject("response");
         HttpResponse rebuilt = resp;
