@@ -89,7 +89,10 @@ async function installInto(target, isWorker) {
       setStatus('worker hook eval failed: ' + e.message, true),
     );
   } else {
-    await cdp('Page.addScriptToEvaluateOnNewDocument', { source: hookSource }, target).catch(() => {});
+    // without this the page is never hooked and capture stays silently empty: say so
+    await cdp('Page.addScriptToEvaluateOnNewDocument', { source: hookSource }, target).catch((e) =>
+      setStatus('hook injection failed: ' + e.message, true),
+    );
   }
 }
 
@@ -195,6 +198,12 @@ function onEvent(source, method, params) {
     } catch (_) {}
     return;
   }
+  if (method === 'Target.detachedFromTarget') {
+    // a worker ended / an iframe went away: drop its per-session state
+    childSessions.delete(params.sessionId);
+    scriptsBySession.delete(params.sessionId);
+    return;
+  }
   if (method === 'Target.attachedToTarget') {
     const sessionId = params.sessionId;
     const type = params.targetInfo && params.targetInfo.type;
@@ -208,9 +217,11 @@ function onEvent(source, method, params) {
         await installInto(child, isWorker);
         // reach a worker's own nested workers / a frame's children too
         await cdp('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, child).catch(() => {});
-        await cdp('Runtime.runIfWaitingForDebugger', {}, child).catch(() => {});
       } catch (e) {
         setStatus('worker/iframe hook failed: ' + e.message, true);
+      } finally {
+        // it was attached paused (waitForDebuggerOnStart): resume it even when hooking failed, or it hangs forever
+        await cdp('Runtime.runIfWaitingForDebugger', {}, child).catch(() => {});
       }
     })();
   }
@@ -220,8 +231,12 @@ function onDetach(source, reason) {
   if (source.tabId !== tabId) return;
   attached = false;
   hooked = false;
+  tracer = null; // its breakpoints went away with the session; a later Hook ON starts a fresh tracer
+  childSessions.clear();
+  scriptsBySession.clear();
   updateHookBtn();
-  setStatus('debugger detached (' + reason + '). 다시 열려면 Hook ON.', true);
+  const why = reason === 'canceled_by_user' ? '디버깅 배너에서 취소됨' : reason === 'target_closed' ? '탭이 닫힘' : reason;
+  setStatus('디버거 분리됨 (' + why + ') — 캡처가 멈췄습니다. 다시 시작하려면 Hook ON (페이지가 새로고침됩니다).', true);
 }
 
 chrome.debugger.onEvent.addListener(onEvent);
@@ -244,12 +259,31 @@ function addOrigin(o) {
     apply: null, site: top ? { url: top.url, line: top.line, col: top.col } : null });
 }
 
+// Memory cap for long sessions: transport records (every request/response seen) are only needed for correlation
+// when they arrive and for integrity drafting, so the oldest are dropped past this many. Crypto call records
+// define the config and are kept.
+const MAX_TRANSPORT = 1500;
+let recordSeq = 0;
+function pruneTransport() {
+  let excess = records.filter((r) => r.lib === 'transport').length - MAX_TRANSPORT;
+  if (excess <= 0) return;
+  for (let i = 0; i < records.length && excess > 0; ) {
+    const r = records[i];
+    if (r.lib === 'transport' && r !== selected) {
+      if (r._tr) r._tr.remove();
+      records.splice(i, 1);
+      excess--;
+    } else i++;
+  }
+}
+
 function addRecord(rec) {
   if (rec.lib === 'origin') return addOrigin(rec);
-  rec.n = records.length + 1;
+  rec.n = ++recordSeq;
   if (rec.lib === 'transport') window.correlate(rec, records); // correlate.js
   else if (rec.op === 'decrypt') window.correlateLate(rec, records); // decrypted after its response arrived
   records.push(rec);
+  if (rec.lib === 'transport') pruneTransport();
   renderRow(rec);
   scheduleAutoSend();
   el('count').textContent = records.filter((r) => r.lib !== 'transport').length + ' calls';
@@ -488,6 +522,7 @@ hookBtn.onclick = async () => {
 
 el('clear').onclick = () => {
   records.length = 0;
+  recordSeq = 0;
   originKeys.clear(); // let "unknown" rows appear again (e.g. to re-trace after a page reload)
   rowsEl.innerHTML = '';
   selected = null;

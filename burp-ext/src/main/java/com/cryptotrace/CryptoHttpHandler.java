@@ -92,6 +92,11 @@ public final class CryptoHttpHandler implements HttpHandler {
     private void remember(HttpRequestToBeSent req) {
         long now = System.currentTimeMillis();
         if (encryptedPlain.size() > PRUNE_ABOVE) encryptedPlain.values().removeIf(p -> now - p.at() > PENDING_TTL_MS);
+        // still too many (a fast Intruder run whose responses never come): drop the oldest
+        while (encryptedPlain.size() > PRUNE_ABOVE * 4) {
+            encryptedPlain.entrySet().stream().min(java.util.Comparator.comparingLong(e -> e.getValue().at()))
+                    .ifPresent(e -> encryptedPlain.remove(e.getKey()));
+        }
         encryptedPlain.put(req.messageId(), new Pending(req, now));
     }
 
@@ -99,6 +104,7 @@ public final class CryptoHttpHandler implements HttpHandler {
     private void captureSessionKeys(HttpResponseReceived res) {
         if (sessionKeys.isEmpty()) return;
         String url = res.initiatingRequest() != null ? res.initiatingRequest().url() : null;
+        if (!sessionKeys.mayCapture(url)) return; // don't turn every response body into a String
         List<SessionKeys.Capture> found;
         try {
             found = sessionKeys.extract(url, Utf8.text(res.body().getBytes()), res::headerValue);

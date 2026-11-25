@@ -21,6 +21,7 @@
   // key=value pairs. A lone `x=...` is too ambiguous (base64 padding looks like one), so without a form
   // Content-Type at least two pairs are required.
   const FORM_RE = /^[\w.\-[\]%]+=[^&]*(&[\w.\-[\]%]+=[^&]*)+$/;
+  const MAX_TEXT_SAMPLE = 256 * 1024;
   const describeBody = (body, contentType) => {
     try {
       if (typeof URLSearchParams === 'function' && body instanceof URLSearchParams) return { kind: 'form', fields: formFields(body) };
@@ -49,6 +50,9 @@
         return { kind: 'json', fields };
       }
     } catch (_) { /* not json */ }
+    // A long session would otherwise keep every large page/response body in the panel. A whole-body ciphertext
+    // is far shorter than this; a longer text body can't be matched as one anyway.
+    if (typeof body === 'string' && body.length > MAX_TEXT_SAMPLE) return { kind: 'text', sample: body.slice(0, MAX_TEXT_SAMPLE), truncated: body.length };
     return { kind: 'text', sample: body };
   };
 

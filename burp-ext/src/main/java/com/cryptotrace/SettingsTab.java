@@ -571,12 +571,26 @@ public final class SettingsTab {
         return null;
     }
 
+    private static final int MAX_LOG_LINES = 5000;
+
+    /** Keep the log area bounded over a long session (drop the oldest lines). EDT only. */
+    private void trimLog() {
+        int extra = log.getLineCount() - MAX_LOG_LINES;
+        if (extra <= 0) return;
+        try {
+            log.getDocument().remove(0, log.getLineEndOffset(extra - 1));
+        } catch (javax.swing.text.BadLocationException ignored) {
+            // concurrent change: trimmed next time
+        }
+    }
+
     public void append(String line) {
         List<String> s = sink;
         if (s != null) s.add(line);
         String ts = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
         SwingUtilities.invokeLater(() -> {
             log.append("[" + ts + "] " + line + "\n");
+            trimLog();
             log.setCaretPosition(log.getDocument().getLength());
         });
     }

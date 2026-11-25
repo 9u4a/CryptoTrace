@@ -169,6 +169,7 @@
       if (!fn) return;
       if (!fn.candidates) fn.candidates = await candidatesOf(t, cf);
       fn.stack.push({ args: await argsOf(t, cf) });
+      if (fn.stack.length > 64) fn.stack.shift(); // a call that threw never returns: don't let those pile up
     }
 
     async function onReturn(t, s, cf, bp) {
