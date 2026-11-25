@@ -30,7 +30,7 @@ public final class Crypto {
     /** Result of a transform. `matched` is the profile name or null when out of scope. */
     public record Result<T>(String matched, T message, JsonArray applied) {
         public boolean allOk() {
-            for (JsonElement a : applied) if (!a.getAsJsonObject().get("ok").getAsBoolean()) return false;
+            for (JsonElement a : applied) if (!isOk(a.getAsJsonObject())) return false;
             return true;
         }
 
@@ -38,12 +38,23 @@ public final class Crypto {
             StringBuilder sb = new StringBuilder();
             for (JsonElement a : applied) {
                 JsonObject o = a.getAsJsonObject();
-                if (!o.get("ok").getAsBoolean()) {
-                    sb.append(o.get("in").getAsString()).append(' ').append(o.get("where").getAsString())
-                            .append(": ").append(o.get("error").getAsString()).append("; ");
+                if (!isOk(o)) {
+                    sb.append(str(o, "in", "?")).append(' ').append(str(o, "where", "?"))
+                            .append(": ").append(str(o, "error", "unknown error")).append("; ");
                 }
             }
-            return sb.toString();
+            return sb.length() == 0 ? "unknown error" : sb.toString();
+        }
+
+        /** A missing or null "ok" counts as a failure. */
+        static boolean isOk(JsonObject o) {
+            JsonElement ok = o.get("ok");
+            return ok != null && !ok.isJsonNull() && ok.getAsBoolean();
+        }
+
+        private static String str(JsonObject o, String key, String fallback) {
+            JsonElement v = o.get(key);
+            return v == null || v.isJsonNull() ? fallback : v.getAsString();
         }
     }
 
@@ -180,12 +191,18 @@ public final class Crypto {
         return args;
     }
 
+    /** A non-empty reason for a blocked request, even when the exception has no message. */
+    public static String reason(Throwable e) {
+        String m = e.getMessage();
+        return m == null || m.isBlank() ? e.getClass().getSimpleName() : m;
+    }
+
     /** Applied entries as simple (in, where) pairs, for insertion-point discovery. */
     public static List<String[]> appliedLocations(JsonArray applied) {
         List<String[]> out = new ArrayList<>();
         for (JsonElement a : applied) {
             JsonObject o = a.getAsJsonObject();
-            if (o.get("ok").getAsBoolean()) out.add(new String[] {o.get("in").getAsString(), o.get("where").getAsString()});
+            if (Result.isOk(o)) out.add(new String[] {o.get("in").getAsString(), o.get("where").getAsString()});
         }
         return out;
     }

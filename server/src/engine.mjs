@@ -1,6 +1,6 @@
 // Operations exposed to Burp. Pure request -> result; transport lives in main.mjs.
 import { loadProfile, inScope, selftest } from './profile.mjs';
-import { transform, PLAIN_MARKER } from './message.mjs';
+import { transform, PLAIN_MARKER, errorText } from './message.mjs';
 
 export const VERSION = '0.2.0';
 
@@ -41,7 +41,7 @@ export function createEngine() {
           const scope = p.scope.map((s) => ({ host: s.host, port: s.port, pathRegex: s.pathRegex }));
           return { file, profile: p.name, selftest: selftest(p), captures: p.captures, scope, warnings, identified: p.identified, oracles: p.oracles };
         } catch (e) {
-          return { file, error: e.message };
+          return { file, error: errorText(e) };
         }
       });
       profiles = loaded;
@@ -122,7 +122,7 @@ export function createEngine() {
         try { result = handle(req); } finally { env.session = null; }
         if (!session.need.size || !oracleCall || round >= 3) return result;
         await Promise.all([...session.need.entries()].map(async ([key, job]) => {
-          try { session.cache.set(key, { value: String(await oracleCall(job)) }); } catch (e) { session.cache.set(key, { error: e.message }); }
+          try { session.cache.set(key, { value: String(await oracleCall(job)) }); } catch (e) { session.cache.set(key, { error: errorText(e) }); }
         }));
       }
     },

@@ -131,3 +131,13 @@ test('whole-body plaintext that does not round-trip exactly is left verbatim', a
   const dec = await call('decryptRequest', { host: '127.0.0.1', port, request: enc.request });
   assert.equal(dec.request.body, odd);
 });
+
+test('a non-object JSON line gets an error reply and the server keeps running', async () => {
+  const reply = new Promise((resolve) => waiting.set(null, resolve));
+  proc.stdin.write('null\n');
+  const r = await reply;
+  assert.equal(r.ok, false);
+  assert.match(r.error, /JSON object/);
+  const h = await call('health');
+  assert.equal(h.ok, true);
+});

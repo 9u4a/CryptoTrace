@@ -10,6 +10,9 @@ export const PLAIN_MARKER = 'x-ct-plain';
 // the ciphertext again). Replace the whole value with plaintext to have that encrypted.
 export const KEEP = 'ct-keep:';
 
+// A thrown non-Error (custom module `throw "x"`) has no .message; never let an error text go missing.
+export const errorText = (e) => (e && typeof e.message === 'string' && e.message) || String(e) || 'error';
+
 const findHeader = (headers, name) => headers.findIndex(([n]) => n.toLowerCase() === name.toLowerCase());
 
 function splitPath(p = '') {
@@ -222,7 +225,7 @@ export function transform(profile, rules, msg, direction, integrity = [], reques
       }
       applied.push({ in: r.in, where, ok: true });
     } catch (e) {
-      applied.push({ in: r.in, where, ok: false, error: e.message });
+      applied.push({ in: r.in, where, ok: false, error: errorText(e) });
     }
   }
   if (json !== undefined) body = direction === 'decrypt' ? JSON.stringify(json, null, 2) : JSON.stringify(json);
@@ -254,7 +257,7 @@ export function transform(profile, rules, msg, direction, integrity = [], reques
         else if (t.in === 'json') { const j = JSON.parse(body); setAt(j, t.parts, value); body = JSON.stringify(j); }
         applied.push({ in: t.in, where, integrity: r.type, ok: true });
       } catch (e) {
-        applied.push({ in: t.in, where, integrity: r.type, ok: false, error: e.message });
+        applied.push({ in: t.in, where, integrity: r.type, ok: false, error: errorText(e) });
       }
     }
   }

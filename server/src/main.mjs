@@ -9,6 +9,7 @@
 // Diagnostics go to stderr only; stdout carries protocol lines exclusively.
 import readline from 'node:readline';
 import { createEngine, VERSION } from './engine.mjs';
+import { errorText } from './message.mjs';
 
 const engine = createEngine();
 const write = (obj) => process.stdout.write(JSON.stringify(obj) + '\n');
@@ -49,6 +50,7 @@ rl.on('line', (line) => {
   } catch {
     return write({ id: null, ok: false, error: 'invalid JSON line' });
   }
+  if (req === null || typeof req !== 'object' || Array.isArray(req)) return write({ id: null, ok: false, error: 'request must be a JSON object' });
   if (req.oracleResult != null) {
     const w = asked.get(req.oracleResult);
     if (!w) return;
@@ -63,7 +65,7 @@ rl.on('line', (line) => {
   const ask = req.noOracle ? () => Promise.reject(new Error('deferred: the page function runs when the request is sent')) : oracleCall;
   engine.handleAsync(req, ask).then(
     (res) => write({ id: req.id ?? null, ok: true, ...res }),
-    (e) => write({ id: req.id ?? null, ok: false, error: e.message }),
+    (e) => write({ id: req.id ?? null, ok: false, error: errorText(e) }),
   );
 });
 rl.on('close', () => process.exit(0));

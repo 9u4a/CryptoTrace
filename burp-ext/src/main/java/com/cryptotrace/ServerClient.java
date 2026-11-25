@@ -81,7 +81,8 @@ public final class ServerClient implements AutoCloseable {
                         if (f != null) f.complete(msg);
                     }
                 } catch (RuntimeException e) {
-                    log.accept("bad line from server: " + line);
+                    // never log the whole line: it can carry plaintext or keys
+                    log.accept("bad line from server (" + line.length() + " chars): " + e.getClass().getSimpleName());
                 }
             }
         } catch (IOException ignored) {

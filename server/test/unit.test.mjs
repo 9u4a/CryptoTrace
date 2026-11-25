@@ -650,3 +650,11 @@ test('two loaded profiles with the same scope: load warns which one wins', () =>
   assert.match((res[1].warnings || []).join('\n'), /same scope as "captured-2026-11-19".*127\.0\.0\.1:8088.*first loaded/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('errorText never loses the reason of a thrown non-Error', async () => {
+  const { errorText } = await import('../src/message.mjs');
+  assert.equal(errorText(new Error('boom')), 'boom');
+  assert.equal(errorText('x'), 'x');
+  assert.equal(errorText(undefined), 'undefined');
+  assert.equal(errorText({}), '[object Object]');
+});

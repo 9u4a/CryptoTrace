@@ -62,8 +62,10 @@ public final class CryptoHttpHandler implements HttpHandler {
                 return RequestToBeSentAction.continueWith(enc.message());
             }
             why = enc.matched() == null ? "no profile matches this host/path" : enc.errors();
-        } catch (ServerClient.ServerException e) {
-            why = e.getMessage();
+        } catch (ServerClient.ServerException | RuntimeException e) {
+            // Any failure -- including a bug or a malformed server reply -- must block: a throw out of this
+            // handler could let Burp send the request as it is, i.e. in plaintext.
+            why = Crypto.reason(e);
         }
         String note = "CryptoTrace BLOCKED (not sent): " + why;
         api.logging().logToError(note + " - " + req.url());
