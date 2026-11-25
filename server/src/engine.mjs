@@ -2,7 +2,7 @@
 import { loadProfile, inScope, selftest } from './profile.mjs';
 import { transform, PLAIN_MARKER, errorText } from './message.mjs';
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.7.0'; // same as the jar and the Chrome extension (Burp warns on a mismatch)
 
 // Could some request fall in both scopes? Hosts equal (or one wildcard covers the other), ports compatible,
 // and paths not provably disjoint (equal, or one matches everything).

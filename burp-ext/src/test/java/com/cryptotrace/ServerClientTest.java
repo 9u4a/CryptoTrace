@@ -83,7 +83,7 @@ class ServerClientTest {
         // process's first call (Burp showed "health failed: crypto server exited (code 1)" after Send to Burp).
         for (int i = 0; i < 15; i++) {
             client.start(ServerClient.command("node", ROOT.resolve("server/src/main.mjs").toString()));
-            assertEquals("0.2.0", client.call("health", null).get("version").getAsString(), "restart #" + i);
+            assertTrue(client.call("health", null).get("version").getAsString().matches("\\d+\\.\\d+\\.\\d+"), "restart #" + i);
         }
     }
 

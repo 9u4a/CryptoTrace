@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'com.cryptotrace'
-version = '0.6.0'
+version = '0.7.0'
 
 repositories {
     mavenCentral()
@@ -37,6 +37,8 @@ shadowJar {
     archiveClassifier.set('all')
     archiveVersion.set(version)
     relocate 'com.google.gson', 'com.cryptotrace.shaded.gson'
+    // read back by SettingsTab to warn when the server script/exe is from another release
+    manifest { attributes 'Implementation-Version': version }
 }
 
 build.dependsOn shadowJar

@@ -471,7 +471,13 @@ public final class SettingsTab {
             append("starting: " + String.join(" ", ServerClient.command(settings.launcher(), settings.script())));
             server.start(ServerClient.command(settings.launcher(), settings.script()));
             JsonObject health = server.call("health", null);
-            append("server " + health.get("version").getAsString() + " started");
+            String serverVersion = health.get("version").getAsString();
+            append("server " + serverVersion + " started");
+            String jarVersion = SettingsTab.class.getPackage().getImplementationVersion();
+            if (jarVersion != null && !jarVersion.equals(serverVersion)) {
+                append("WARN server " + serverVersion + " != extension " + jarVersion
+                        + " - use the server script/exe from the same release");
+            }
             return loadAndReport(files, true);
         } catch (Exception e) {
             append("ERROR " + e.getMessage());
