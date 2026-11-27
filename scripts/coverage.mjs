@@ -121,27 +121,45 @@ async function runCase(browser, c) {
     }
     let reencOk = false;
     let usedOracle = false;
+    let reloadOk = null;
     if (edited) {
       // Burp + bridge + panel stand-in for the L4 oracle: run the registered page function in its tab/worker
+      let oracleTarget = null;
       const oracleCall = async (job) => {
         const owner = tab.records.find((r) => r.lib === 'traced' && r.oracleKey === job.fn);
         const target = (owner && owner.__session) || tab.s; // same call as the panel's oracle loop
+        oracleTarget = target;
         await tracer.stop(target); // the panel stops tracing before the first oracle call
-        const res = await Promise.race([browser.cdp('Runtime.evaluate', { expression: mods.CryptoTraceTracer.oracleExpression(job.fn, job.value),
+        const run = () => Promise.race([browser.cdp('Runtime.evaluate', { expression: mods.CryptoTraceTracer.oracleExpression(job.fn, job.value),
           awaitPromise: true, returnByValue: true, timeout: 5000 }, target),
         sleep(5000).then(() => { throw new Error('oracle evaluate hung (page paused?)'); })]);
+        let res = await run();
+        // as the panel: after a reload the function is found again on the heap, then called once more
+        if (res.exceptionDetails && mods.CryptoTraceTracer.isNotRegistered(res) && await tracer.reregister(target, job.fn)) res = await run();
         if (res.exceptionDetails) throw new Error((res.exceptionDetails.exception && res.exceptionDetails.exception.description) || 'page function threw');
         usedOracle = true;
         return res.result.value;
       };
-      const enc = await eng.handleAsync({ op: 'encryptRequest', host: '127.0.0.1', port, request: edited }, oracleCall);
-      const failed = (enc.applied || []).filter((a) => !a.ok);
-      if (failed.length) out.notes.push('re-encrypt: ' + failed.map((a) => a.where + ' ' + a.error).join('; '));
-      const headers = Object.fromEntries(enc.request.headers.filter(([k]) => /^(content-type|cookie|x-)/i.test(k)));
-      const res = await fetch(base + (enc.request.path || req.path), { method: req.method, headers, body: req.method === 'GET' ? undefined : enc.request.body });
-      const reply = await res.json().catch(() => ({}));
-      reencOk = !!reply.ok && times(reply.plain, `cov-${id}-3`) >= need;
-      if (!reply.ok) out.notes.push('target rejected the re-encrypted request: ' + reply.error);
+      const send = async (plainMarker) => {
+        const body = (s) => (s == null ? s : s.split(`cov-${id}-3`).join(plainMarker));
+        const enc = await eng.handleAsync({ op: 'encryptRequest', host: '127.0.0.1', port, request: { ...edited, body: body(edited.body) } }, oracleCall);
+        const failed = (enc.applied || []).filter((a) => !a.ok);
+        if (failed.length) out.notes.push('re-encrypt: ' + failed.map((a) => a.where + ' ' + a.error).join('; '));
+        const headers = Object.fromEntries(enc.request.headers.filter(([k]) => /^(content-type|cookie|x-)/i.test(k)));
+        const res = await fetch(base + (enc.request.path || req.path), { method: req.method, headers, body: req.method === 'GET' ? undefined : enc.request.body });
+        const reply = await res.json().catch(() => ({}));
+        if (!reply.ok) out.notes.push('target rejected the re-encrypted request: ' + reply.error);
+        return !!reply.ok && times(reply.plain, plainMarker) >= need;
+      };
+      reencOk = await send(`cov-${id}-3`);
+      // L4 after a page reload: the registry is gone; the oracle must find the function again by itself
+      if (reencOk && usedOracle && oracleTarget === tab.s) {
+        await browser.cdp('Page.reload', {}, tab.s);
+        await sleep(1200);
+        for (let i = 0; i < 30 && !(await tab.evaluate('window.__ready === true').catch(() => false)); i++) await sleep(100);
+        reloadOk = await send(`cov-${id}-4`);
+        out.notes.push(reloadOk ? 'oracle after reload: re-registered' : 'oracle after reload: FAILED');
+      }
     }
 
     const at = (r) => (r.apply && r.apply.at === api) || (r.applyResponse && r.applyResponse.at === api);
@@ -157,13 +175,14 @@ async function runCase(browser, c) {
     }
     if (respOk) out.status = 'auto';
     else if (decryptOk && reencOk) out.status = traced && !hooked ? 'trace' : 'auto';
-    else if (reencOk) out.status = 'encrypt-only';
+    else if (reencOk && reloadOk !== false) out.status = 'encrypt-only';
+    else if (reencOk) out.status = 'locate'; // the oracle worked once but not after a reload: not usable in practice
     else if (skipped.length) out.status = 'skip';
     else if (unknownLeft.length || traced || hooked || unk.length) out.status = 'locate';
     else if (out.scan.length) out.status = 'scan-only';
     else out.status = 'none';
     if (usedOracle) out.notes.push('re-encrypted by the page function (oracle)');
-    out.detail = { hooked, traced, decryptOk, reencOk, unknown: unknownLeft.length, oracle: usedOracle };
+    out.detail = { hooked, traced, decryptOk, reencOk, unknown: unknownLeft.length, oracle: usedOracle, reloadOk };
   } catch (e) {
     out.status = 'error';
     out.notes.push(e.message);

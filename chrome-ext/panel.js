@@ -626,11 +626,21 @@ async function oracleLoop() {
           if (wasTracing) setStatus('추적 종료: 오라클이 등록된 함수를 직접 호출합니다');
         }
         // never wait past the server's deadline: a stuck call would stop this loop from picking up the next jobs
-        const res = await Promise.race([
-          cdp('Runtime.evaluate', { expression: CryptoTraceTracer.oracleExpression(job.fn, job.value),
-            awaitPromise: true, returnByValue: true, timeout: ORACLE_CALL_MS }, target),
-          sleep(ORACLE_CALL_MS + 500).then(() => { throw new Error(`페이지 함수가 ${ORACLE_CALL_MS / 1000}초 안에 끝나지 않음 (Sources에서 일시정지 중?)`); }),
-        ]);
+        const deadline = Date.now() + ORACLE_CALL_MS;
+        const run = () => {
+          const left = Math.max(300, deadline - Date.now());
+          return Promise.race([
+            cdp('Runtime.evaluate', { expression: CryptoTraceTracer.oracleExpression(job.fn, job.value),
+              awaitPromise: true, returnByValue: true, timeout: left }, target),
+            sleep(left + 500).then(() => { throw new Error(`페이지 함수가 ${ORACLE_CALL_MS / 1000}초 안에 끝나지 않음 (Sources에서 일시정지 중?)`); }),
+          ]);
+        };
+        let res = await run();
+        // page reloaded since tracing: find the same function again (heap, by name + location) and call it once more
+        if (CryptoTraceTracer.isNotRegistered(res) && tracer && await tracer.reregister(target, job.fn)) {
+          setStatus(`오라클: 새로고침된 페이지에서 ${String(job.fn).split('@')[0]}()를 다시 찾아 등록했습니다`);
+          res = await run();
+        }
         // first line only: the description carries a stack of the injected expression, useless in Burp's log
         if (res.exceptionDetails) throw new Error(String((res.exceptionDetails.exception && res.exceptionDetails.exception.description) || 'page function threw').split('\n')[0].replace(/^Error: /, ''));
         await CryptoTraceBridge.oracleResult(fetch, burp, { oid: job.oid, ok: true, value: String(res.result.value) });

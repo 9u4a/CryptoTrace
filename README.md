@@ -32,7 +32,7 @@
 |---|---|
 | **크롬 확장** (DevTools 패널) | WebCrypto(생성·파생·unwrap 키 포함)·CryptoJS·forge·JSEncrypt·sjcl·jsbn `RSAKey`·aes-js·Node `crypto` API(crypto-browserify) 호출을 후킹(Worker·iframe·webpack 번들 포함), 호출 위치로 Sources 이동 |
 | **라이브러리 없는 암호화** | 모든 스크립트(Worker·eval 포함)에서 AES·SEED·ARIA·SM4·DES·SHA·MD5 상수를 찾아 위치 표시. 출처 모를 암호문은 만든 함수까지 역추적하고, **추적** 버튼으로 그 함수의 입력·출력·키 후보를 기록 → 서버가 알고리즘·키·IV를 자동 판정(AES·ARIA·SEED) |
-| **브라우저 오라클** (ACTIVE, 기본 꺼짐) | 표준 알고리즘으로 판정되지 않는 커스텀·난독화 암호는 추적한 **원본 페이지 함수**를 Burp가 호출해 재암호화. 탭이 열려 있어야 하며 호출 간격 제한(기본 100ms) |
+| **브라우저 오라클** (ACTIVE, 기본 꺼짐) | 표준 알고리즘으로 판정되지 않는 커스텀·난독화 암호는 추적한 **원본 페이지 함수**를 Burp가 호출해 재암호화. 탭이 열려 있어야 하며 호출 간격 제한(기본 100ms). 페이지를 새로고침해도 같은 함수를 다시 찾아 등록 |
 | **전송 위치 연결** | fetch/XHR·`Request`·sendBeacon 본문(JSON·form·FormData)·헤더·쿼리·쿠키에서 암호문 위치를 자동으로 찾음. hex/base64url로 다시 인코딩된 암호문, IV가 앞에 붙거나 별도 필드로 가는 경우도 인식. WebSocket은 패널 표시만 |
 | **Send to Burp** | 캡처한 설정을 Burp로 바로 전송·로드·자가검증, 결과를 패널에 표시. 자동 전송 선택, 키를 잡지 못했거나 요청마다 바뀌는 키는 이유와 함께 빼고 보냄. **Export**로 손볼 초안 저장도 가능 |
 | **로컬 서버** | AES·ARIA(CBC/CTR/GCM/ECB 등 OpenSSL 대칭 암호)·SEED(내장)·ChaCha20-Poly1305·RC4·RSA(OAEP/PKCS1, DER·PEM·JWK 키)·고정 키 ECDH, KDF(PBKDF2/scrypt/HKDF/OpenSSL EVP), 커스텀 JS 모듈, 로드 시 자가검증 |

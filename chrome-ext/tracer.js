@@ -254,6 +254,42 @@
         if (s.on) { await cdp('Debugger.setSkipAllPauses', { skip: true }, t).catch(() => {}); s.on = false; }
       },
       traced(t) { return [...stateOf(t).fns.values()].map((f) => ({ name: f.name, url: f.url, line: f.line })); },
+      /** After a page reload the registry (globalThis.__ct_fns) is gone. Find the traced function again without
+       * pausing: walk the heap for functions of that name (closures included) and register the one whose
+       * [[FunctionLocation]] is the traced url:line:col. `this` is not known any more: it is called unbound. */
+      async reregister(t, key) {
+        const m = /^(.*)@(.*):(\d+):(\d+)$/.exec(String(key || ''));
+        if (!m) return false;
+        const id = m[1].split('.').pop();
+        const [url, line, col] = [m[2], Number(m[3]), Number(m[4])];
+        if (!/^[A-Za-z_$][\w$]*$/.test(id) || id === 'anonymous') return false;
+        const objectGroup = 'ct-reregister';
+        try {
+          const proto = await cdp('Runtime.evaluate', { expression: 'Function.prototype', objectGroup, silent: true }, t);
+          const all = await cdp('Runtime.queryObjects', { prototypeObjectId: proto.result.objectId, objectGroup }, t);
+          const named = await cdp('Runtime.callFunctionOn', { objectId: all.objects.objectId, objectGroup, silent: true,
+            functionDeclaration: 'function (n) { return this.filter((f) => f.name === n).slice(0, 50); }', arguments: [{ value: id }] }, t);
+          const items = await cdp('Runtime.getProperties', { objectId: named.result.objectId, ownProperties: true }, t);
+          const urls = new Map(scriptsOf(t).map((s) => [s.scriptId, s.url || '']));
+          for (const p of items.result || []) {
+            if (!/^\d+$/.test(p.name) || !p.value || !p.value.objectId) continue;
+            const props = await cdp('Runtime.getProperties', { objectId: p.value.objectId, ownProperties: true }, t);
+            const fl = (props.internalProperties || []).find((x) => x.name === '[[FunctionLocation]]');
+            const at = fl && fl.value && fl.value.value;
+            if (!at || at.lineNumber + 1 !== line || at.columnNumber + 1 !== col) continue;
+            if (urls.has(at.scriptId) && urls.get(at.scriptId) !== url) continue; // same position in another script
+            const ok = await cdp('Runtime.callFunctionOn', { objectId: p.value.objectId, returnByValue: true, silent: true,
+              functionDeclaration: 'function (k) { const reg = globalThis.__ct_fns || Object.defineProperty(globalThis, "__ct_fns", { value: {}, enumerable: false }).__ct_fns;'
+                + ' reg[k] = { f: this, self: undefined }; return true; }', arguments: [{ value: key }] }, t);
+            if (ok.result && ok.result.value === true) return true;
+          }
+          return false;
+        } catch (_) {
+          return false;
+        } finally {
+          await cdp('Runtime.releaseObjectGroup', { objectGroup }, t).catch(() => {});
+        }
+      },
     };
   }
 
@@ -266,5 +302,11 @@
       + ` return typeof r === 'string' ? r : JSON.stringify(r); })()`;
   }
 
-  window.CryptoTraceTracer = { createTracer, oracleExpression };
+  /** Did an oracleExpression evaluation fail only because the function isn't registered (e.g. page reloaded)? */
+  function isNotRegistered(res) {
+    const d = res && res.exceptionDetails;
+    return !!d && /page function not registered/.test(String((d.exception && d.exception.description) || d.text || ''));
+  }
+
+  window.CryptoTraceTracer = { createTracer, oracleExpression, isNotRegistered };
 })();
