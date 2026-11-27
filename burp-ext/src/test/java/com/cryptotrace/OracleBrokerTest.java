@@ -90,6 +90,17 @@ class OracleBrokerTest {
     }
 
     @Test
+    void clearAnswersQueuedJobsSoANewServerNeverGetsThem() throws Exception {
+        broker.enabled(true);
+        broker.minIntervalMs(0);
+        assertNull(broker.next(10));
+        broker.submit(job(1, "old"));
+        broker.clear("stopped");
+        assertEquals(List.of("1:false:stopped"), replies);
+        assertNull(broker.next(10), "nothing left for the panel");
+    }
+
+    @Test
     void originOfNormalizes() {
         assertEquals("http://app.test", OracleBroker.originOf("http://App.test/a/b?c"));
         assertEquals("https://app.test:8443", OracleBroker.originOf("https://app.test:8443/"));

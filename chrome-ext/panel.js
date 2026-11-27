@@ -584,7 +584,8 @@ el('autoSend').onchange = () => {
 // ACTIVE, off on every DevTools session: while on (and Hook ON), long-poll Burp for jobs -- "re-encrypt this edited
 // plaintext with page function X" -- run that registered function in the page (tracer.js oracleExpression) and
 // post the result. One job at a time; Burp throttles (Options > min interval).
-let oracleRunning = false;
+// Each start bumps the generation: a loop stuck on an await (e.g. a paused page) is abandoned, not waited for.
+let oracleGen = 0;
 let oracleState = '';
 let oracleDone = 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -594,21 +595,29 @@ function oracleSay(state, msg, isErr) {
   setStatus(msg, isErr);
 }
 // The inspected page's origin, so Burp routes this tab's jobs here (several tabs may run the oracle).
+// eval never calls back while the page is paused in the debugger: give up after 2 s and reuse the last answer.
+let lastOrigin = '';
 function inspectedOrigin() {
   return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(lastOrigin), 2000);
     try {
-      chrome.devtools.inspectedWindow.eval('location.origin', (v, err) => resolve(!err && typeof v === 'string' && v !== 'null' ? v : ''));
+      chrome.devtools.inspectedWindow.eval('location.origin', (v, err) => {
+        clearTimeout(t);
+        if (!err && typeof v === 'string' && v !== 'null') lastOrigin = v;
+        resolve(!err && typeof v === 'string' && v !== 'null' ? v : lastOrigin);
+      });
     } catch (_) {
-      resolve('');
+      clearTimeout(t);
+      resolve(lastOrigin);
     }
   });
 }
 const ORACLE_CALL_MS = 5000; // < Burp's stale limit (7 s) and the server's oracle timeout (8 s)
 async function oracleLoop() {
-  if (oracleRunning) return;
-  oracleRunning = true;
+  const gen = ++oracleGen;
+  oracleState = '';
   try {
-    while (el('oracleOn').checked) {
+    while (el('oracleOn').checked && gen === oracleGen) {
       if (!attached) { oracleSay('detached', '오라클: Hook ON 상태에서만 동작합니다', true); await sleep(2000); continue; }
       const r = await CryptoTraceBridge.oracleNext(fetch, burp, 8000, await inspectedOrigin());
       if (r.error) { oracleSay('err:' + r.error, '오라클: ' + r.error, true); await sleep(3000); continue; }
@@ -657,8 +666,7 @@ async function oracleLoop() {
       }
     }
   } finally {
-    oracleRunning = false;
-    oracleState = '';
+    if (gen === oracleGen) oracleState = '';
   }
 }
 el('oracleOn').onchange = () => {

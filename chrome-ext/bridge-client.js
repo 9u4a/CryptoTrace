@@ -92,14 +92,22 @@
   }
 
   /** Post one job's answer: {oid, ok, value} | {oid, ok: false, error}. */
-  async function oracleResult(fetchFn, { port, token }, answer) {
+  async function oracleResult(fetchFn, { port, token }, answer, timeoutMs = 5000) {
+    // bounded: a post that never settles would stop the panel's oracle loop for good
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    let timer = null;
+    const expired = new Promise((_, reject) => {
+      if (typeof setTimeout === 'function') timer = setTimeout(() => { if (ctl) ctl.abort(); reject(new Error('timeout')); }, timeoutMs);
+    });
     try {
-      await fetchFn(endpoint(port, '/oracle/result'), {
-        method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(answer),
-      });
+      const init = { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(answer) };
+      if (ctl) init.signal = ctl.signal;
+      await Promise.race([fetchFn(endpoint(port, '/oracle/result'), init), expired]);
       return true;
     } catch (_) {
       return false;
+    } finally {
+      if (timer !== null) clearTimeout(timer);
     }
   }
 

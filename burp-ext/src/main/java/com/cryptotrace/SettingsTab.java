@@ -455,6 +455,7 @@ public final class SettingsTab {
         stopEpoch++;
         boolean wasRunning = server.isRunning();
         server.close();
+        oracle.clear("the crypto server was stopped");
         scopes.set(null);
         sessionKeys.clear();
         append(wasRunning ? "stopped by user - scopes and session keys cleared" : "stop: server was not running - scopes and session keys cleared");

@@ -144,6 +144,11 @@ public final class OracleBroker {
         replier.reply(oid, ok, value, ok ? null : (error == null ? "the page function failed" : error));
     }
 
+    /** The crypto server was stopped: queued jobs belong to it (a new server numbers its jobs from 1 again). */
+    public void clear(String why) {
+        drain(why);
+    }
+
     private void drain(String why) {
         synchronized (queue) {
             Job j;

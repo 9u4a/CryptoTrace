@@ -93,3 +93,16 @@ test('oracleNext sends the inspected origin so Burp routes jobs to the right tab
   await sandbox.window.CryptoTraceBridge.oracleNext(fetchFn, { port: 17777, token: 't' }, 100, 'https://app.test:8443');
   assert.match(url, /wait=100&origin=https%3A%2F%2Fapp\.test%3A8443$/);
 });
+
+test('oracleResult gives up on a post Burp never answers (the oracle loop must keep going)', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../bridge-client.js', import.meta.url), 'utf8');
+  const sandbox = { window: {}, setTimeout, clearTimeout, AbortController };
+  (await import('node:vm')).runInNewContext(src, sandbox);
+  let signal = null;
+  const never = (u, init) => { signal = init.signal; return new Promise(() => {}); };
+  const t0 = Date.now();
+  const ok = await sandbox.window.CryptoTraceBridge.oracleResult(never, { port: 17777, token: 't' }, { oid: 1, ok: true, value: 'v' }, 20);
+  assert.equal(ok, false);
+  assert.ok(Date.now() - t0 < 2000);
+  assert.equal(signal.aborted, true);
+});
