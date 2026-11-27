@@ -84,8 +84,9 @@
       const body = await Promise.race([res.json(), expired]).catch(() => null);
       if (!body) return { error: 'HTTP ' + res.status };
       return { enabled: !!body.enabled, job: body.job || null };
-    } catch (_) {
-      return { error: `Burp not reachable on 127.0.0.1:${Number(port) || DEFAULT_PORT}` };
+    } catch (e) {
+      // the reason tells a timeout (Burp held the poll) from a refused/blocked connection
+      return { error: `Burp not reachable on 127.0.0.1:${Number(port) || DEFAULT_PORT} (${(e && e.message) || e})` };
     } finally {
       if (timer !== null) clearTimeout(timer);
     }
