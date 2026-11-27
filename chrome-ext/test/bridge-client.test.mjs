@@ -71,6 +71,19 @@ test('oracle: next() long-polls with the token and returns the job; result() pos
   assert.match(down.error, /not reachable/);
 });
 
+test('oracleNext gives up on a poll Burp never answers (extension reloaded mid-poll)', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../bridge-client.js', import.meta.url), 'utf8');
+  const sandbox = { window: {}, setTimeout, clearTimeout, AbortController };
+  (await import('node:vm')).runInNewContext(src, sandbox);
+  let signal = null;
+  const never = (u, init) => { signal = init.signal; return new Promise(() => {}); };
+  const t0 = Date.now();
+  const r = await sandbox.window.CryptoTraceBridge.oracleNext(never, { port: 17777, token: 't' }, 10, '', 20);
+  assert.match(r.error, /not reachable/);
+  assert.ok(Date.now() - t0 < 2000);
+  assert.equal(signal.aborted, true); // the hung connection is dropped too
+});
+
 test('oracleNext sends the inspected origin so Burp routes jobs to the right tab', async () => {
   const src = (await import('node:fs')).readFileSync(new URL('../bridge-client.js', import.meta.url), 'utf8');
   const sandbox = { window: {} };

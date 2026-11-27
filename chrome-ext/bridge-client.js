@@ -65,19 +65,29 @@
   /** Long-poll Burp for the next job. -> {enabled, job?} or {error}. */
   // `origin`: the inspected page's origin, so Burp hands this panel only jobs for functions traced on that origin
   // (with several tabs open, each panel gets its own).
-  async function oracleNext(fetchFn, { port, token }, waitMs, origin) {
+  // `graceMs`: how long past `waitMs` to wait for Burp. A poll in flight when the extension is reloaded (or Burp
+  // restarts) can stay unanswered forever; without a limit the panel loop would hang showing "waiting".
+  async function oracleNext(fetchFn, { port, token }, waitMs, origin, graceMs = 5000) {
     if (!token) return { error: 'Burp token not set' };
+    const wait = Math.max(0, Number(waitMs) || 0);
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    let timer = null;
+    const expired = new Promise((_, reject) => {
+      if (typeof setTimeout === 'function') timer = setTimeout(() => { if (ctl) ctl.abort(); reject(new Error('poll timeout')); }, wait + graceMs);
+    });
     try {
-      const q = '/oracle/next?wait=' + Math.max(0, Number(waitMs) || 0) + (origin ? '&origin=' + encodeURIComponent(origin) : '');
-      const res = await fetchFn(endpoint(port, q), {
-        method: 'GET', headers: { Authorization: 'Bearer ' + token },
-      });
+      const q = '/oracle/next?wait=' + wait + (origin ? '&origin=' + encodeURIComponent(origin) : '');
+      const init = { method: 'GET', headers: { Authorization: 'Bearer ' + token } };
+      if (ctl) init.signal = ctl.signal;
+      const res = await Promise.race([fetchFn(endpoint(port, q), init), expired]);
       if (res.status === 401) return { error: 'Burp rejected the token' };
-      const body = await res.json().catch(() => null);
+      const body = await Promise.race([res.json(), expired]).catch(() => null);
       if (!body) return { error: 'HTTP ' + res.status };
       return { enabled: !!body.enabled, job: body.job || null };
     } catch (_) {
       return { error: `Burp not reachable on 127.0.0.1:${Number(port) || DEFAULT_PORT}` };
+    } finally {
+      if (timer !== null) clearTimeout(timer);
     }
   }
 
