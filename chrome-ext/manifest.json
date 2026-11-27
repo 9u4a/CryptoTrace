@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CryptoTrace",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Trace client-side crypto calls while debugging and send the key/algorithm config to the CryptoTrace Burp extension.",
   "permissions": [
     "debugger",
