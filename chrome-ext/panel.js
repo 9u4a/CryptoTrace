@@ -631,7 +631,8 @@ async function oracleLoop() {
             awaitPromise: true, returnByValue: true, timeout: ORACLE_CALL_MS }, target),
           sleep(ORACLE_CALL_MS + 500).then(() => { throw new Error(`페이지 함수가 ${ORACLE_CALL_MS / 1000}초 안에 끝나지 않음 (Sources에서 일시정지 중?)`); }),
         ]);
-        if (res.exceptionDetails) throw new Error((res.exceptionDetails.exception && res.exceptionDetails.exception.description) || 'page function threw');
+        // first line only: the description carries a stack of the injected expression, useless in Burp's log
+        if (res.exceptionDetails) throw new Error(String((res.exceptionDetails.exception && res.exceptionDetails.exception.description) || 'page function threw').split('\n')[0].replace(/^Error: /, ''));
         await CryptoTraceBridge.oracleResult(fetch, burp, { oid: job.oid, ok: true, value: String(res.result.value) });
         oracleDone++;
         oracleState = '';
