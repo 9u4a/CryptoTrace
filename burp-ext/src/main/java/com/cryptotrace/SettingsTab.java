@@ -95,10 +95,14 @@ public final class SettingsTab {
         JButton start = new JButton("Start / Reload");
         start.setToolTipText("Save the settings, (re)start the local crypto server and load every config (with selftest)");
         start.addActionListener(e -> new Thread(this::startServer, "cryptotrace-start").start());
+        JButton stop = new JButton("Stop");
+        stop.setToolTipText("Stop the crypto server and forget loaded scopes and captured session keys."
+                + " Requests marked plain are blocked until Start / Reload");
+        stop.addActionListener(e -> new Thread(this::stopServer, "cryptotrace-stop").start());
         JButton copyTop = new JButton("Copy token");
         copyTop.setToolTipText("Pairing token for the DevTools panel (Burp settings) -- paste it there once");
         copyTop.addActionListener(e -> copyToken());
-        JPanel bar = row(start, status, gap(18), new JLabel("Bridge:"), bridgeStatus, copyTop);
+        JPanel bar = row(start, stop, status, gap(18), new JLabel("Bridge:"), bridgeStatus, copyTop);
 
         javax.swing.JTabbedPane tabs = new javax.swing.JTabbedPane();
         tabs.addTab("Configs", configsTab());
@@ -443,6 +447,20 @@ public final class SettingsTab {
         server.close();
     }
 
+    /** Bumped by Stop: a crash-restart scheduled before it must not bring the server back. */
+    private volatile long stopEpoch;
+
+    /** User Stop: no auto-restart (close() is not a crash), Decrypted tabs go away, captured keys are dropped. */
+    public synchronized void stopServer() {
+        stopEpoch++;
+        boolean wasRunning = server.isRunning();
+        server.close();
+        scopes.set(null);
+        sessionKeys.clear();
+        append(wasRunning ? "stopped by user - scopes and session keys cleared" : "stop: server was not running - scopes and session keys cleared");
+        setStatus(false, "stopped");
+    }
+
     public synchronized boolean startServer() {
         if (shutDown) return false;
         List<String> files = presentConfigs();
@@ -667,6 +685,7 @@ public final class SettingsTab {
         }
         long delay = 1000L << n;
         setStatus(false, "DOWN - restarting in " + delay / 1000 + " s. " + reason);
+        long epoch = stopEpoch;
         Thread t = new Thread(() -> {
             try {
                 Thread.sleep(delay);
@@ -674,6 +693,7 @@ public final class SettingsTab {
                 return;
             }
             if (server.isRunning()) return; // the user restarted it meanwhile
+            if (stopEpoch != epoch) return; // the user pressed Stop meanwhile
             append("auto-restart " + (n + 1) + "/" + MAX_RESTARTS + " after a crash");
             startServer();
         }, "cryptotrace-restart");

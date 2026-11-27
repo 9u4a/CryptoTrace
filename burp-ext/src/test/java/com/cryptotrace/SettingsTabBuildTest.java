@@ -8,6 +8,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The suite tab must build without Burp (catches field-initialization-order NPEs before a release). */
 class SettingsTabBuildTest {
@@ -23,8 +24,16 @@ class SettingsTabBuildTest {
                     return null;
                 });
         Settings settings = new Settings(prefs, "");
-        SettingsTab tab = new SettingsTab(settings, new ServerClient(line -> { }, 1000), new SessionKeys());
+        Scopes scopes = new Scopes();
+        scopes.set(com.google.gson.JsonParser.parseString(
+                "{\"results\":[{\"profile\":\"a\",\"scope\":[{\"host\":\"a.test\",\"port\":null,\"pathRegex\":\".*\"}]}]}").getAsJsonObject());
+        SessionKeys keys = new SessionKeys();
+        keys.markPushed(new SessionKeys.Capture("a", "sk", "V"));
+        SettingsTab tab = new SettingsTab(settings, new ServerClient(line -> { }, 1000), keys, scopes);
         assertNotNull(tab.component());
         assertNotNull(store.get("cryptotrace.bridge.token"), "token generated once and persisted");
+        tab.stopServer(); // Stop works even when nothing runs, and leaves no scope or key behind
+        assertTrue(scopes.isEmpty());
+        assertTrue(keys.pushed().isEmpty());
     }
 }

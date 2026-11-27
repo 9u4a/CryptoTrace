@@ -91,4 +91,14 @@ class SessionKeysTest {
         known.forEach(sk::markPushed);   // ...until the carried-over values are marked again
         assertTrue(sk.extract("https://api.test/x", body, n -> null).isEmpty(), "same key must not be pushed twice");
     }
+
+    @Test
+    void clearDropsRulesAndPushedValues() {
+        SessionKeys sk = new SessionKeys();
+        sk.setRules(loadResult("\"captures\":[{\"keyName\":\"sk\",\"jsonPath\":\"$.k\"}]"));
+        sk.markPushed(new SessionKeys.Capture("p", "sk", "V"));
+        sk.clear();
+        assertTrue(sk.isEmpty());
+        assertTrue(sk.pushed().isEmpty());
+    }
 }

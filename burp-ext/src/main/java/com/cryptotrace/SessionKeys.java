@@ -87,6 +87,12 @@ public final class SessionKeys {
         return out;
     }
 
+    /** Stop: forget every rule and captured value (the target's keys leave Burp's memory). */
+    public void clear() {
+        rules = List.of();
+        lastPushed.clear();
+    }
+
     /** Values pushed so far, to carry over a server restart or config reload (setRules forgets them). */
     public List<Capture> pushed() {
         List<Capture> out = new ArrayList<>();
