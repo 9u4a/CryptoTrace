@@ -550,7 +550,7 @@ const burp = { port: CryptoTraceBridge.DEFAULT_PORT, token: '', autoSend: false 
 let lastSent = '';
 let autoTimer = null;
 
-chrome.storage.local.get(['burpPort', 'burpToken', 'autoSend'], (v) => {
+chrome.storage.local.get(['burpPort', 'burpToken', 'autoSend', 'oracleOn'], (v) => {
   burp.port = Number(v.burpPort) || CryptoTraceBridge.DEFAULT_PORT;
   burp.token = v.burpToken || '';
   burp.autoSend = !!v.autoSend;
@@ -558,6 +558,9 @@ chrome.storage.local.get(['burpPort', 'burpToken', 'autoSend'], (v) => {
   el('burpToken').value = burp.token;
   el('autoSend').checked = burp.autoSend;
   if (!burp.token) el('burpBar').hidden = false; // first run: show where to paste the token
+  // the oracle stays off until the user turns it on once (it still needs Burp's Options switch too)
+  el('oracleOn').checked = v.oracleOn === true;
+  if (el('oracleOn').checked) oracleLoop();
 });
 
 el('burpToggle').onclick = () => { el('burpBar').hidden = !el('burpBar').hidden; };
@@ -659,6 +662,7 @@ async function oracleLoop() {
   }
 }
 el('oracleOn').onchange = () => {
+  chrome.storage.local.set({ oracleOn: el('oracleOn').checked });
   if (el('oracleOn').checked) oracleLoop();
   else setStatus('오라클 꺼짐');
 };
