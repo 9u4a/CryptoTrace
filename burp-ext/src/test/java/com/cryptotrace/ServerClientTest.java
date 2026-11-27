@@ -36,6 +36,13 @@ class ServerClientTest {
     }
 
     @Test
+    void exitReasonSkipsTheStartupBanner() {
+        // a killed server leaves only its banner on stderr: that is no reason
+        assertEquals("", ServerClient.summarize(List.of("[cryptotrace] server 0.7.0 ready (stdio)")));
+        assertEquals(": boom", ServerClient.summarize(List.of("[cryptotrace] server 0.7.0 ready (stdio)", "boom")));
+    }
+
+    @Test
     void healthAndProfiles() throws Exception {
         JsonObject h = client.call("health", null);
         assertEquals(2, h.getAsJsonArray("profiles").size());

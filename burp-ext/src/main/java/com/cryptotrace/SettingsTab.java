@@ -520,7 +520,6 @@ public final class SettingsTab {
                 continue;
             }
             StringBuilder sb = new StringBuilder("loaded " + o.get("profile").getAsString() + " - selftest:");
-            if (o.has("sessionKeysKept")) append("  kept " + o.get("sessionKeysKept").getAsInt() + " captured session key(s)");
             if (o.getAsJsonArray("selftest").isEmpty()) sb.append(" (no vectors)");
             for (JsonElement t : o.getAsJsonArray("selftest")) {
                 JsonObject tt = t.getAsJsonObject();
@@ -530,6 +529,7 @@ public final class SettingsTab {
                         .append(ok ? "OK" : "FAIL(" + tt.get("error").getAsString() + ")");
             }
             append(sb.toString());
+            if (o.has("sessionKeysKept")) append("  kept " + o.get("sessionKeysKept").getAsInt() + " captured session key(s)");
             if (o.has("scope") && !o.get("scope").isJsonNull()) {
                 StringBuilder sc = new StringBuilder("  scope:");
                 for (JsonElement se : o.getAsJsonArray("scope")) {
@@ -631,12 +631,17 @@ public final class SettingsTab {
     }
 
     private volatile String lastStatus = "";
+    static final int STATUS_MAX = 60;
 
     private void setStatus(boolean ok, String text) {
         lastStatus = text;
         boolean down = !ok && text.startsWith("DOWN");
+        String full = (ok ? "[ON] " : down ? "[DOWN] " : "[OFF] ") + (down ? text.substring(4).replaceFirst("^[\\s-]+", "") : text);
         SwingUtilities.invokeLater(() -> {
-            status.setText((ok ? "[ON] " : down ? "[DOWN] " : "[OFF] ") + (down ? text.substring(4).strip() : text));
+            // the top bar is a one-row FlowLayout: a label wider than the bar wraps to a hidden second row,
+            // so keep it short and put the whole text in the tooltip
+            status.setText(full.length() > STATUS_MAX ? full.substring(0, STATUS_MAX - 3) + "..." : full);
+            status.setToolTipText(full);
             status.setForeground(ok ? new java.awt.Color(0x18, 0x80, 0x38) : down ? new java.awt.Color(0xc0, 0x20, 0x20) : java.awt.Color.GRAY);
         });
     }

@@ -178,7 +178,9 @@ public final class ServerClient implements AutoCloseable {
             String s = l.strip();
             if (s.matches("^[\\w.]*Error( \\[\\w+])?:.*")) return ": " + s;
         }
-        List<String> nonBlank = lines.stream().map(String::strip).filter(s -> !s.isEmpty()).toList();
+        // the startup banner says nothing about why it exited (a kill leaves only that line)
+        List<String> nonBlank = lines.stream().map(String::strip)
+                .filter(s -> !s.isEmpty() && !s.matches("^\\[cryptotrace] server \\S+ ready.*")).toList();
         if (nonBlank.isEmpty()) return "";
         return ": " + String.join(" | ", nonBlank.subList(Math.max(0, nonBlank.size() - 3), nonBlank.size()));
     }
