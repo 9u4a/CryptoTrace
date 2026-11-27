@@ -66,6 +66,7 @@ public final class PlainEditors {
         private final HttpRequestEditor editor;
         private HttpRequestResponse current;
         private Crypto.Result<HttpRequest> decrypted;
+        private boolean plainAlready;
 
         RequestTab(MontoyaApi api, Crypto crypto, EditorCreationContext ctx) {
             this.api = api;
@@ -85,6 +86,14 @@ public final class PlainEditors {
         @Override
         public void setRequestResponse(HttpRequestResponse rr) {
             current = rr;
+            plainAlready = rr.request().hasHeader(Crypto.PLAIN_MARKER);
+            if (plainAlready) {
+                // already plaintext (Send to Repeater (Plain), or a field edited here): decrypting it would treat
+                // the plaintext as ciphertext and show e.g. "ct-keep:hello"; it gets encrypted when sent
+                decrypted = new Crypto.Result<>(null, rr.request(), new com.google.gson.JsonArray());
+                editor.setRequest(rr.request());
+                return;
+            }
             try {
                 decrypted = crypto.decryptRequestForUi(rr.request());
                 HttpRequest shown = decrypted.message();
@@ -101,6 +110,7 @@ public final class PlainEditors {
             // Apply the edited path/headers/body onto the ORIGINAL request object so its HTTP/2
             // metadata, header order and casing survive (parsing raw text would discard them).
             HttpRequest edited = mergeOnto(current.request(), editor.getRequest().withRemovedHeader(ERROR_HEADER));
+            if (plainAlready) return edited; // stays plaintext (X-CT-Plain kept); the HTTP handler encrypts it
             // On failure, never hand back the half-encrypted message (it would go out with plaintext fields):
             // return the edited plaintext marked X-CT-Plain so the HTTP handler retries at send time and
             // blocks the request if it still can't encrypt.
