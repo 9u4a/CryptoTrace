@@ -82,6 +82,9 @@ public final class Bridge {
     }
 
     private java.util.concurrent.ExecutorService pool;
+    // oracle poll diagnostics: a panel that stops polling, or polls that pile up, show in the CryptoTrace log
+    private final java.util.concurrent.atomic.AtomicInteger polls = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile long lastPollNs = System.nanoTime();
 
     public synchronized void stop() {
         if (http != null) {
@@ -136,12 +139,23 @@ public final class Bridge {
                         }
                     }
                 }
+                long t0 = System.nanoTime();
+                int inFlight = polls.incrementAndGet();
+                long gap = (t0 - lastPollNs) / 1_000_000;
+                lastPollNs = t0;
+                if (gap > 15_000) log.accept("oracle: panel polling" + (origin == null || origin.isEmpty() ? "" : " from " + origin)
+                        + " (none for " + gap / 1000 + " s)");
+                if (inFlight > 2) log.accept("oracle: " + inFlight + " polls in flight (several panels open?)");
                 try {
                     JsonObject job = oracle.next(wait, origin);
                     if (job != null) o.add("job", job);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                } finally {
+                    polls.decrementAndGet();
                 }
+                long took = (System.nanoTime() - t0) / 1_000_000;
+                if (took > wait + 1000) log.accept("oracle: poll held " + took + " ms (asked to wait " + wait + " ms)");
                 reply(ex, 200, o);
                 return;
             }

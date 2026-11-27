@@ -70,6 +70,7 @@
   async function oracleNext(fetchFn, { port, token }, waitMs, origin, graceMs = 5000) {
     if (!token) return { error: 'Burp token not set' };
     const wait = Math.max(0, Number(waitMs) || 0);
+    const t0 = Date.now();
     const ctl = typeof AbortController === 'function' ? new AbortController() : null;
     let timer = null;
     const expired = new Promise((_, reject) => {
@@ -86,7 +87,7 @@
       return { enabled: !!body.enabled, job: body.job || null };
     } catch (e) {
       // the reason tells a timeout (Burp held the poll) from a refused/blocked connection
-      return { error: `Burp not reachable on 127.0.0.1:${Number(port) || DEFAULT_PORT} (${(e && e.message) || e})` };
+      return { error: `Burp not reachable on 127.0.0.1:${Number(port) || DEFAULT_PORT} (${(e && e.message) || e}, after ${Date.now() - t0} ms)` };
     } finally {
       if (timer !== null) clearTimeout(timer);
     }
